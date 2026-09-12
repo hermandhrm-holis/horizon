@@ -27,10 +27,9 @@ def normalize(df: pd.DataFrame) -> pd.DataFrame:
     df["student_id"] = df["student_id"].fillna("").astype(str).str.strip()
     df["score"] = pd.to_numeric(df["score"].astype(str).str.replace(",", ".", regex=False), errors="coerce")
     df["assessment_order"] = pd.to_numeric(df["assessment_order"], errors="coerce")
-    df = df.dropna(subset=["score", "assessment_order"])
     df = df[df.student_id.ne("") & df.mapel.isin(CORE)].copy()
     if df.empty:
-        raise SourceError("Tidak ada nilai tiga mapel utama yang dapat dibaca.")
+        raise SourceError("Tidak ada daftar siswa atau nilai tiga mapel utama yang dapat dibaca.")
     return df
 
 
@@ -50,7 +49,25 @@ def fetch_gas(url: str, token: str) -> pd.DataFrame:
     if not payload.get("ok"):
         error = str(payload.get("error", "Respons GAS belum berhasil"))
         raise SourceError("GAS menolak permintaan: " + error[:120])
-    return normalize(pd.DataFrame(payload.get("rows", [])))
+    values = payload.get("rows", [])
+    roster = payload.get("students", [])
+    if not isinstance(values, list) or not isinstance(roster, list):
+        raise SourceError("Format daftar nilai atau siswa dari GAS tidak sesuai.")
+    known = {str(row.get("student_id", "")).strip() for row in values if isinstance(row, dict)}
+    records = list(values)
+    for student in roster:
+        if not isinstance(student, dict):
+            continue
+        sid = str(student.get("student_id", "")).strip()
+        if sid and sid not in known:
+            records.append({"student_id": sid, "nama": student.get("nama", ""),
+                            "kelas": student.get("kelas", ""), "status_tka": student.get("status_tka", "Belum diatur"),
+                            "mapel": "Matematika", "assessment_order": None,
+                            "assessment_code": None, "score": None})
+            known.add(sid)
+    if not records:
+        raise SourceError("API belum mengirim nilai maupun daftar siswa.")
+    return normalize(pd.DataFrame(records))
 
 
 def demo_data() -> pd.DataFrame:

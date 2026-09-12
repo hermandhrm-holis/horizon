@@ -1,6 +1,7 @@
 """HORIZON: four decision-focused dashboards, exclusively backed by the GAS API."""
 
 import re
+from html import escape
 
 import pandas as pd
 import plotly.express as px
@@ -37,6 +38,42 @@ def card(label, value, note=""):
     st.markdown(f'<div class="card"><div class="card-label">{label}</div>'
                 f'<div class="card-value">{value}</div><div class="card-note">{note}</div></div>',
                 unsafe_allow_html=True)
+
+
+def overview_card(label, value, note, accent):
+    st.markdown('<div class="card" style="border-top:4px solid ' + accent + ';min-height:130px">'
+                '<div class="card-label">' + escape(str(label)) + '</div>'
+                '<div class="card-value">' + escape(str(value)) + '</div>'
+                '<div class="card-note">' + escape(str(note)) + '</div></div>',
+                unsafe_allow_html=True)
+
+
+def cohort_chart(frame):
+    observed = select_assessments(frame[frame.score.notna()], "Gabungan")
+    if observed.empty:
+        st.info("Belum ada nilai TO untuk menggambar tren pada cakupan ini.")
+        return
+    grouped = observed.groupby(["assessment_order", "mapel"], as_index=False).agg(
+        rerata=("score", "mean"), siswa=("student_id", "nunique"))
+    grouped["TO"] = "TO " + grouped.assessment_order.astype(int).astype(str)
+    fig = px.bar(grouped, x="TO", y="rerata", color="mapel", barmode="group",
+                 hover_data={"siswa": True, "rerata": ":.1f", "TO": False},
+                 labels={"rerata": "Rata-rata nilai", "mapel": "Mata pelajaran", "siswa": "Siswa bernilai"},
+                 color_discrete_map={"Bahasa Inggris": "#FFC842", "Bahasa Indonesia": "#35D3A1",
+                                     "Matematika": "#8899FF"},
+                 category_orders={"mapel": ["Bahasa Inggris", "Bahasa Indonesia", "Matematika"],
+                                  "TO": ["TO " + str(i) for i in sorted(grouped.assessment_order.unique())]})
+    fig.update_traces(texttemplate="%{y:.0f}", textposition="outside", cliponaxis=False,
+                      textfont=dict(size=11))
+    fig.update_layout(height=420, paper_bgcolor="#152032", plot_bgcolor="#152032",
+                      font=dict(color="#F2F6FF", size=13), legend=dict(orientation="h", y=1.12,
+                      x=0, title_text="", font=dict(color="#F2F6FF")),
+                      margin=dict(l=25, r=25, t=80, b=30), bargap=.24)
+    fig.update_xaxes(showgrid=False, linecolor="#526078", tickfont=dict(color="#DFE8FA"),
+                     title_text="Urutan TO")
+    fig.update_yaxes(range=[0, 110], gridcolor="#354159", zeroline=False,
+                     tickfont=dict(color="#DFE8FA"), title_font=dict(color="#F2F6FF"))
+    st.plotly_chart(fig, theme=None, width="stretch")
 
 
 def table(frame, cols=None, key=None, height=430):
@@ -280,18 +317,45 @@ if tabs[1].open:
 if tabs[2].open:
     with tabs[2]:
         st.subheader("Strategi penempatan Fu-Ch-Am-Pi-On")
-        st.caption("Seluruh 140 siswa digunakan agar kapasitas tidak berubah mengikuti filter sidebar. Peringkat menunjukkan capaian; usulan kelas mempertimbangkan kecocokan tujuan kelompok.")
+        st.caption("Ringkasan dan grafik mengikuti filter sidebar; penempatan kelas tetap memakai semua siswa agar kapasitas tidak berubah. Peringkat menunjukkan capaian, bukan potensi perkembangan.")
+        graded = data[data.score.notna() & data.student_id.isin(scoped.student_id)]
+        a,b,c,d,e = st.columns(5)
+        with a: overview_card("Siswa terdaftar", len(scoped), population, "#6461e8")
+        with b: overview_card("Sudah ada nilai", graded.student_id.nunique(), "minimal satu nilai TO", "#28be89")
+        with c: overview_card("Belum ada nilai", len(scoped)-graded.student_id.nunique(), "butuh pemeriksaan", "#f6a51f")
+        with d: overview_card("Mencapai target", int((scoped.data_memadai & scoped.rata_terkini.ge(target)).sum()),
+                              f"rata 3 TO ≥ {target:g}; data memadai", "#229e91")
+        with e: overview_card("Perlu perhatian", int(scoped.status.isin(["Prioritas tinggi", "Perlu dipantau"]).sum()),
+                              "indikasi, bukan vonis TKA", "#e8636b")
+        st.markdown('<div style="background:#152032;border-radius:18px;padding:18px 25px 2px;'
+                    'margin-top:16px"><div style="color:#fff;font-size:20px;font-weight:750">'
+                    'Tren skor per mapel dan TO</div><div style="color:#cbd5e4">'
+                    'Rata-rata siswa yang punya nilai; jumlah siswa bisa berbeda antar-TO.</div></div>',
+                    unsafe_allow_html=True)
+        cohort_chart(data[data.student_id.isin(scoped.student_id)])
+        st.caption("Gabungan TO PENABUR dan HOLIS sesuai urutan kolom API. Perubahan rerata juga dapat dipengaruhi peserta, jumlah nilai, atau kesulitan TO.")
         n_tka = int(all_features.status_tka.str.casefold().eq("ikut").sum())
         st.write(f"**{len(all_features)} siswa**, **{n_tka} peserta TKA** teridentifikasi.")
         if len(all_features) != 140 or not all_features.status_tka.str.casefold().isin(["ikut", "tidak ikut"]).all():
             st.warning("Usulan kelas ditahan sampai 140 siswa dan status peserta TKA seluruh siswa lengkap.")
         else:
-            bottom = st.slider("Skor terbawah wajib di On", 0, 29, 10)
+            bottom = st.slider("Minimum siswa terbawah di On (termasuk data kurang)", 0, 29, 10)
             try:
                 features = student_features(data)
                 original = allocate(features, bottom)
-                overall = global_rank[["student_id", "peringkat"]].rename(columns={"peringkat":"Peringkat sekolah (3 TO)"})
+                overall = (global_rank[["student_id", "peringkat"]].rename(
+                    columns={"peringkat":"Peringkat sekolah (3 TO)"}) if not global_rank.empty
+                    else pd.DataFrame(columns=["student_id", "Peringkat sekolah (3 TO)"]))
                 original = original.merge(overall, on="student_id", how="left")
+                incomplete = original[~original.data_memadai]
+                if not incomplete.empty:
+                    exceptional = int(incomplete.status_tka.str.casefold().eq("ikut").sum())
+                    st.warning(f"{len(incomplete)} siswa dengan data kurang ditempatkan sementara di On; "
+                               f"{exceptional} di antaranya peserta TKA. Ini pengecualian sementara, "
+                               "bukan penilaian kemampuan. Cek rincian jumlah nilai dan lengkapi data.")
+                    with st.expander("Lihat alasan siswa ditempatkan sementara di On", expanded=True):
+                        table(incomplete, ["nama", "kelas_asal", "status_tka", "jumlah_nilai",
+                                           "Peringkat sekolah (3 TO)", "alasan"])
                 summary = (original.groupby("rekomendasi").agg(Siswa=("student_id", "size"),
                            Peserta_TKA=("status_tka", lambda v:int(v.str.casefold().eq("ikut").sum())),
                            Median_nilai=("rata_terkini", "median"))
@@ -300,7 +364,8 @@ if tabs[2].open:
                 group = st.selectbox("Lihat kelompok", ["Semua", "Fu", "Ch", "Am", "Pi", "On"])
                 view = original if group == "Semua" else original[original.rekomendasi == group]
                 table(view, ["nama", "kelas_asal", "status_tka", "Peringkat sekolah (3 TO)",
-                             "rata_terkini", "tren", "fluktuasi", "potensi_pengembangan", "rekomendasi", "alasan"])
+                             "jumlah_nilai", "rata_terkini", "tren", "fluktuasi",
+                             "potensi_pengembangan", "rekomendasi", "alasan"])
                 with st.expander("Sesuaikan siswa tanpa menulis ke Google Sheet"):
                     editor = original[["student_id", "nama", "Peringkat sekolah (3 TO)", "rekomendasi"]].copy()
                     editor["Pilihan Bapak"] = editor.rekomendasi

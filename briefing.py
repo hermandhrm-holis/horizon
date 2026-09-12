@@ -22,7 +22,8 @@ def subject_brief(data: pd.DataFrame, target: float = 65) -> pd.DataFrame:
     for sid, student in data.groupby("student_id", sort=True):
         first = student.iloc[0]
         for subject in SUBJECTS:
-            scores = (student[student.mapel.astype(str).str.casefold() == subject.casefold()]
+            scores = (student[(student.mapel.astype(str).str.casefold() == subject.casefold()) &
+                              student.score.notna()]
                       .sort_values("assessment_order", kind="stable").score.to_numpy(float))
             n = len(scores)
             all_mean = float(np.mean(scores)) if n else np.nan

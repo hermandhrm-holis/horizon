@@ -29,7 +29,8 @@ def student_analysis(student: pd.DataFrame, target: float = 65) -> dict:
     first = student.iloc[0]
     subjects = []
     for subject in SUBJECTS:
-        part = student[student.mapel.astype(str).str.casefold() == subject.casefold()]
+        part = student[(student.mapel.astype(str).str.casefold() == subject.casefold()) &
+                       student.score.notna()]
         part = part.sort_values("assessment_order", kind="stable")
         values = part.score.to_numpy(float)
         if not len(values):

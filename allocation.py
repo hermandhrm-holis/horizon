@@ -14,9 +14,12 @@ def student_features(data: pd.DataFrame) -> pd.DataFrame:
     records = []
     for sid, student in data.groupby("student_id", sort=True):
         scores, trends, dispersions, subject_counts = [], [], [], []
+        counts_by_subject = {}
         by_subject = {}
         for subject in SUBJECTS:
-            s = student[student["mapel"].str.casefold() == subject.casefold()].sort_values("assessment_order")
+            s = student[(student["mapel"].str.casefold() == subject.casefold()) &
+                        student["score"].notna()].sort_values("assessment_order")
+            counts_by_subject[subject] = len(s)
             if s.empty:
                 continue
             recent = s["score"].tail(3).to_numpy(float)
@@ -28,6 +31,11 @@ def student_features(data: pd.DataFrame) -> pd.DataFrame:
             by_subject[subject] = round(float(np.mean(recent)), 1)
         first = student.iloc[0]
         complete = len(scores) == 3 and all(count >= 3 for count in subject_counts)
+        missing_reason = ("Data kurang: " + "; ".join(
+            f"{subject} {counts_by_subject[subject]}/3 nilai minimum"
+            for subject in SUBJECTS if counts_by_subject[subject] < 3)
+            + f". Total {sum(counts_by_subject.values())} nilai tercatat; perlu minimal 3 per mapel."
+            if not complete else "")
         avg = float(np.mean(scores)) if scores else np.nan
         trend = float(np.mean(trends)) if trends else 0.0
         volatility = float(np.mean(dispersions)) if dispersions else np.nan
@@ -39,6 +47,7 @@ def student_features(data: pd.DataFrame) -> pd.DataFrame:
             "student_id": sid, "nama": first["nama"], "kelas_asal": first["kelas"],
             "status_tka": first["status_tka"], "rata_terkini": avg,
             "tren": trend, "mapel_tersedia": len(scores), "data_memadai": complete,
+            "jumlah_nilai": sum(counts_by_subject.values()), "alasan_data": missing_reason,
             "fluktuasi": volatility, "potensi_pengembangan": potential, "kecocokan_fu": fu_fit,
             "skor_penempatan": float(np.clip(avg + np.clip(trend, -5, 5) * 0.4, 0, 100)) if scores else np.nan,
             "mapel_terlemah": min(by_subject, key=by_subject.get) if by_subject else "—",
@@ -53,7 +62,7 @@ def capacities(n: int) -> dict:
 
 
 def allocate(features: pd.DataFrame, bottom_on: int = 10, overrides: dict | None = None) -> pd.DataFrame:
-    """Place TKA students first; enforce capacities, On bottom block and manual locks."""
+    """Place incomplete records in On; use available scores for all other placements."""
     df = features.copy()
     if df["student_id"].duplicated().any():
         raise ValueError("ID siswa ganda; penempatan dibatalkan.")
@@ -61,18 +70,21 @@ def allocate(features: pd.DataFrame, bottom_on: int = 10, overrides: dict | None
     status = df["status_tka"].astype(str).str.casefold()
     if (~status.isin(["ikut", "tidak ikut"])).any():
         raise ValueError("Ada status TKA belum diatur; lengkapi PesertaTKA dahulu.")
-    if df["skor_penempatan"].isna().any() or (~df["data_memadai"]).any():
-        raise ValueError("Ada siswa dengan data tiga mapel utama yang belum memadai; lengkapi nilai sebelum mengelompokkan.")
     if bottom_on < 0 or bottom_on > caps["On"]:
         raise ValueError("Jumlah siswa terbawah untuk On harus 0–29.")
-    participants = df[status == "ikut"].sort_values(["kecocokan_fu", "skor_penempatan", "student_id"], ascending=[False, False, True])
-    others = df[status == "tidak ikut"].sort_values(["skor_penempatan", "student_id"], ascending=[False, True])
+    incomplete = df[~df["data_memadai"] | df["skor_penempatan"].isna()].copy()
+    if len(incomplete) > caps["On"]:
+        raise ValueError(f"{len(incomplete)} siswa memiliki data kurang, sedangkan On hanya {caps['On']} kursi. "
+                         "Tidak ada penempatan yang memenuhi keduanya; periksa kapasitas atau lengkapi data.")
+    ready = df[~df.student_id.isin(incomplete.student_id)]
+    participants = ready[ready["status_tka"].str.casefold() == "ikut"].sort_values(
+        ["kecocokan_fu", "skor_penempatan", "student_id"], ascending=[False, False, True])
+    others = ready[ready["status_tka"].str.casefold() == "tidak ikut"].sort_values(
+        ["skor_penempatan", "student_id"], ascending=[False, True])
     if len(participants) > sum(caps[g] for g in ("Fu", "Ch", "Am")):
         raise ValueError("Peserta TKA melebihi kapasitas Fu + Ch + Am (81).")
-    if len(participants) < caps["Fu"] + caps["Ch"]:
-        raise ValueError("Minimal 51 peserta TKA diperlukan jika Fu dan Ch diisi peserta TKA sepenuhnya.")
 
-    assigned = {}
+    assigned = {sid: "On" for sid in incomplete.student_id}
     for sid in participants.head(caps["Fu"])["student_id"]:
         assigned[sid] = "Fu"
     remaining_tka = participants[~participants["student_id"].isin(assigned)].sort_values(
@@ -81,13 +93,16 @@ def allocate(features: pd.DataFrame, bottom_on: int = 10, overrides: dict | None
         assigned[sid] = "Ch"
     for sid in remaining_tka.iloc[caps["Ch"]:]["student_id"]:
         assigned[sid] = "Am"
-    remaining_am = caps["Am"] - sum(v == "Am" for v in assigned.values())
-    for sid in others.head(remaining_am)["student_id"]:
-        assigned[sid] = "Am"
-    lower = others.iloc[remaining_am:]
-    if len(lower) != caps["Pi"] + caps["On"]:
+    offset = 0
+    for group in ("Fu", "Ch", "Am"):
+        vacancies = caps[group] - sum(v == group for v in assigned.values())
+        for sid in others.iloc[offset:offset + vacancies].student_id:
+            assigned[sid] = group
+        offset += vacancies
+    lower = others.iloc[offset:]
+    if len(lower) != caps["Pi"] + caps["On"] - len(incomplete):
         raise ValueError("Jumlah siswa kelompok bawah tidak sesuai kapasitas.")
-    bottom_ids = set(lower.tail(bottom_on)["student_id"])
+    bottom_ids = set(lower.tail(min(len(lower), max(0, bottom_on - len(incomplete)))).student_id)
     for sid in bottom_ids:
         assigned[sid] = "On"
     remaining_lower = lower[~lower["student_id"].isin(bottom_ids)]
@@ -104,15 +119,19 @@ def allocate(features: pd.DataFrame, bottom_on: int = 10, overrides: dict | None
     if len(set(overrides)) != len(overrides) or any(g not in GROUPS for g in overrides.values()):
         raise ValueError("Perubahan manual harus memakai ID unik dan kelompok Fu/Ch/Am/Pi/On.")
     tka_ids = set(participants["student_id"])
+    incomplete_ids = set(incomplete.student_id)
+    if any(sid in incomplete_ids and group != "On" for sid, group in overrides.items()):
+        raise ValueError("Siswa dengan data kurang tetap di On sampai datanya memadai.")
     if any(sid in tka_ids and group in ("Pi", "On") for sid, group in overrides.items()):
-        raise ValueError("Peserta TKA tidak boleh dipindahkan ke Pi atau On.")
+        raise ValueError("Peserta TKA dengan data memadai tidak boleh ke Pi atau On.")
     # Swaps preserve exact capacities. Locked assignments cannot themselves be moved.
     locked = set(overrides)
     for sid, desired in overrides.items():
         current = assigned[sid]
         if current == desired:
             continue
-        candidates = df[(df["student_id"].map(assigned) == desired) & ~df["student_id"].isin(locked)]
+        candidates = df[(df["student_id"].map(assigned) == desired) &
+                        ~df["student_id"].isin(locked | incomplete_ids)]
         if current in ("Pi", "On"):
             candidates = candidates[candidates["status_tka"].str.casefold() == "tidak ikut"]
         if candidates.empty:
@@ -123,6 +142,9 @@ def allocate(features: pd.DataFrame, bottom_on: int = 10, overrides: dict | None
 
     df["rekomendasi"] = df["student_id"].map(assigned)
     df["alasan"] = df.apply(lambda r: (
+        "On sementara karena " + r.alasan_data +
+        (" Status TKA: ikut; pengecualian sementara yang perlu ditinjau sekolah."
+         if r.status_tka.casefold() == "ikut" else "") if r.student_id in incomplete_ids else
         "Penempatan manual (pertukaran aman)" if r.student_id in locked else
         "Fu: skor kuat dan stabil" if r.rekomendasi == "Fu" else
         "Ch: indikator ruang berkembang" if r.rekomendasi == "Ch" else
@@ -132,8 +154,9 @@ def allocate(features: pd.DataFrame, bottom_on: int = 10, overrides: dict | None
     ), axis=1)
     if df["rekomendasi"].value_counts().to_dict() != caps:
         raise AssertionError("Kapasitas penempatan tidak terpenuhi.")
-    if (df["status_tka"].str.casefold().eq("ikut") & df["rekomendasi"].isin(["Pi", "On"])).any():
-        raise AssertionError("Peserta TKA masuk kelompok bawah.")
+    if (df["status_tka"].str.casefold().eq("ikut") & df["data_memadai"] &
+            df["rekomendasi"].isin(["Pi", "On"])).any():
+        raise AssertionError("Peserta TKA dengan data lengkap masuk kelompok bawah.")
     return df.sort_values(["rekomendasi", "skor_penempatan"], ascending=[True, False])
 
 
@@ -202,7 +225,8 @@ def ranking(data: pd.DataFrame, last_n: int | None = None) -> pd.DataFrame:
     for sid, student in data.groupby("student_id", sort=True):
         per_subject, series = [], {}
         for subject in SUBJECTS:
-            observed = student[student["mapel"].str.casefold() == subject.casefold()].sort_values("assessment_order")
+            observed = student[(student["mapel"].str.casefold() == subject.casefold()) &
+                               student["score"].notna()].sort_values("assessment_order")
             if last_n is not None:
                 observed = observed.tail(last_n)
             values = observed["score"].to_numpy(float)
