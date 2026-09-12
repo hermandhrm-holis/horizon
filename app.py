@@ -31,7 +31,9 @@ def demo_data() -> pd.DataFrame:
             for order in range(1, 6):
                 score = base + offsets[mapel] + trend * (order - 1) + rng.normal(0, 4.5)
                 rows.append([sid, nama, kelas, mapel, order, round(float(np.clip(score, 0, 100)), 2)])
-    return pd.DataFrame(rows, columns=COLUMNS)
+    demo = pd.DataFrame(rows, columns=COLUMNS)
+    demo["status_tka"] = np.where(demo["student_id"].isin(["D001", "D002", "D004", "D006"]), "Ikut", "Tidak Ikut")
+    return demo
 
 
 def secret_or_blank(key: str) -> str:
@@ -47,6 +49,9 @@ def normalize(df: pd.DataFrame) -> pd.DataFrame:
     missing = REQUIRED - set(df.columns)
     if missing:
         raise ValueError("Kolom belum tersedia: " + ", ".join(sorted(missing)))
+    if "status_tka" not in df.columns:
+        df["status_tka"] = "Belum diatur"
+    df["status_tka"] = df["status_tka"].fillna("Belum diatur").astype(str).str.strip()
     df["assessment_order"] = pd.to_numeric(df["assessment_order"], errors="coerce")
     df["score"] = pd.to_numeric(df["score"], errors="coerce")
     return df.dropna(subset=["student_id", "mapel", "assessment_order", "score"])
@@ -63,7 +68,8 @@ def load_gas(url: str, token: str) -> pd.DataFrame:
     return normalize(pd.DataFrame(payload.get("rows", [])))
 
 
-def simulate(df: pd.DataFrame, target: float, future_tests: int, runs: int) -> tuple[pd.DataFrame, dict]:
+def simulate(df: pd.DataFrame, target: float, future_tests: int, runs: int, lifts=None) -> tuple[pd.DataFrame, dict]:
+    lifts = lifts or {subject: 0 for subject in CORE}
     rng = np.random.default_rng(42)
     results, detail = [], {}
     for sid, student in df.groupby("student_id"):
@@ -81,7 +87,7 @@ def simulate(df: pd.DataFrame, target: float, future_tests: int, runs: int) -> t
             else:
                 slope, intercept, sigma = 0.0, float(y[-1]), 9.0
             future_x = np.arange(x.max() + 1, x.max() + future_tests + 1)
-            expected = intercept + slope * future_x
+            expected = intercept + slope * future_x + float(lifts.get(subject, 0))
             simulated_path = rng.normal(expected, sigma, size=(runs, future_tests))
             projected = np.clip(simulated_path.mean(axis=1), 0, 100)
             sims_by_subject.append(projected)
@@ -102,7 +108,10 @@ def simulate(df: pd.DataFrame, target: float, future_tests: int, runs: int) -> t
         first = student.iloc[0]
         results.append({
             "student_id": sid, "nama": first["nama"], "kelas": first["kelas"],
+            "status_tka": first.get("status_tka", "Belum diatur"),
             "peluang_belum_target": probability, "proyeksi_median": float(np.median(combined)),
+            "batas_bawah": float(np.percentile(combined, 10)),
+            "batas_atas": float(np.percentile(combined, 90)),
             "nilai_terakhir": latest_avg, "status": status,
             "faktor_utama": f"{low_subject['mapel']} · proyeksi {low_subject['proyeksi_median']}",
         })
@@ -116,6 +125,7 @@ st.markdown("""
 .hero {background:linear-gradient(110deg,#365f54,#91b4a7);padding:30px 34px;border-radius:28px;color:white;margin-bottom:18px}
 .hero h1 {margin:0;font-size:2.35rem}.hero p{margin:.45rem 0 0;opacity:.9}
 [data-testid="stMetric"] {background:#fff;border:1px solid #d9e3dd;padding:14px;border-radius:18px}
+div[data-testid="stMetricLabel"] *, div[data-testid="stMetricValue"] * {color:#20332e!important;opacity:1!important}
 </style>
 <div class="hero"><div style="letter-spacing:.18em;font-weight:700">HORIZON TKA</div>
 <h1>Risk & Scenario Lab</h1><p>Simulasi probabilistik untuk keputusan intervensi—bukan vonis kelulusan.</p></div>
@@ -135,6 +145,11 @@ with st.sidebar:
     target = st.number_input("Target TKA", 0.0, 100.0, 65.0, 1.0)
     future_tests = st.slider("Asesmen tersisa", 1, 8, 3)
     runs = st.select_slider("Jumlah simulasi", [1000, 3000, 5000, 10000], value=5000)
+    st.caption("Jumlah kemungkinan nilai masa depan yang dihitung per siswa. 3.000 sudah cukup untuk keputusan sekolah.")
+    with st.expander("Bagaimana jika nilai naik?"):
+        lift_math = st.slider("Kenaikan Matematika", 0, 15, 0)
+        lift_bi = st.slider("Kenaikan Bahasa Indonesia", 0, 15, 0)
+        lift_english = st.slider("Kenaikan Bahasa Inggris", 0, 15, 0)
 
 try:
     if source == "Data demo":
@@ -150,23 +165,47 @@ try:
             st.stop()
         data = load_gas(gas_url, gas_token)
 
-    risk, detail = simulate(data, target, future_tests, runs)
+    with st.sidebar:
+        st.divider()
+        st.header("Filter siswa")
+        population = st.selectbox("Peserta", ["Peserta TKA", "Semua Siswa", "Tidak Ikut TKA"])
+        class_options = ["Semua Kelas"] + sorted(data["kelas"].dropna().astype(str).unique().tolist())
+        selected_class = st.selectbox("Kelas", class_options)
+
+    filtered = data.copy()
+    if population == "Peserta TKA":
+        filtered = filtered[filtered["status_tka"].str.casefold() == "ikut"]
+    elif population == "Tidak Ikut TKA":
+        filtered = filtered[filtered["status_tka"].str.casefold() == "tidak ikut"]
+    if selected_class != "Semua Kelas":
+        filtered = filtered[filtered["kelas"].astype(str) == selected_class]
+    if filtered.empty:
+        st.warning("Tidak ada data pada filter ini. Pastikan sheet PesertaTKA sudah tersambung ke API.")
+        st.stop()
+
+    lifts = {"Matematika": lift_math, "Bahasa Indonesia": lift_bi, "Bahasa Inggris": lift_english}
+    baseline_risk, _ = simulate(filtered, target, future_tests, runs)
+    risk, detail = simulate(filtered, target, future_tests, runs, lifts)
     if risk.empty:
         st.warning("Belum ada data yang dapat dianalisis.")
         st.stop()
 
+    baseline_ready = float((1-baseline_risk.peluang_belum_target).sum())
+    scenario_ready = float((1-risk.peluang_belum_target).sum())
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Siswa dianalisis", len(risk))
     c2.metric("Prioritas tinggi", int((risk.status == "Prioritas tinggi").sum()))
     c3.metric("Perlu dipantau", int((risk.status == "Perlu dipantau").sum()))
-    c4.metric("Simulasi per siswa", f"{runs:,}".replace(",", "."))
+    c4.metric("Perkiraan mencapai target", f"{scenario_ready:.1f}", delta=f"{scenario_ready-baseline_ready:+.1f} dari skenario")
 
     left, right = st.columns([1.25, 1])
     with left:
-        st.subheader("Siapa yang paling membutuhkan perhatian?")
-        shown = risk.copy()
+        st.subheader("5 siswa paling membutuhkan perhatian")
+        shown = risk.head(5).copy()
         shown["Peluang belum target"] = (shown["peluang_belum_target"] * 100).round(1).astype(str) + "%"
-        st.dataframe(shown[["nama", "kelas", "Peluang belum target", "proyeksi_median", "faktor_utama", "status"]],
+        shown["Proyeksi"] = shown["proyeksi_median"].round(1)
+        shown["Rentang 80%"] = shown.apply(lambda r: f"{r['batas_bawah']:.1f}–{r['batas_atas']:.1f}", axis=1)
+        st.dataframe(shown[["nama", "kelas", "status_tka", "Peluang belum target", "Proyeksi", "Rentang 80%", "faktor_utama"]],
                      hide_index=True, width="stretch")
     with right:
         st.subheader("Peta risiko dan potensi")
@@ -175,7 +214,8 @@ try:
                          labels={"nilai_terakhir":"Nilai terakhir", "peluang_belum_target":"Peluang belum target"})
         fig.add_vline(x=target, line_dash="dot", line_color="#456f63")
         fig.update_yaxes(tickformat=".0%", range=[0,1])
-        fig.update_layout(height=430, legend_title_text="", margin=dict(l=10,r=10,t=10,b=10))
+        fig.update_layout(height=430, legend_title_text="", margin=dict(l=10,r=10,t=10,b=10),
+                          paper_bgcolor="#ffffff", plot_bgcolor="#ffffff", font_color="#20332e")
         st.plotly_chart(fig, width="stretch")
 
     st.subheader("Mengapa siswa masuk prioritas?")
@@ -185,6 +225,7 @@ try:
     a, b = st.columns([1, 1.3])
     with a:
         st.metric("Peluang belum mencapai target", f"{row['peluang_belum_target']:.1%}")
+        st.write(f"**Rentang proyeksi 80%:** {row['batas_bawah']:.1f}–{row['batas_atas']:.1f}")
         st.caption(f"Hasil {runs:,} simulasi, {future_tests} asesmen tersisa, target {target:g}.")
         st.dataframe(pd.DataFrame(d["subjects"]), hide_index=True, width="stretch")
     with b:
