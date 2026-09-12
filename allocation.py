@@ -13,7 +13,7 @@ def student_features(data: pd.DataFrame) -> pd.DataFrame:
     """Use the recent three scores per subject; missing subjects never become zero."""
     records = []
     for sid, student in data.groupby("student_id", sort=True):
-        scores, trends, dispersions, coverage = [], [], [], 0
+        scores, trends, dispersions, subject_counts = [], [], [], []
         by_subject = {}
         for subject in SUBJECTS:
             s = student[student["mapel"].str.casefold() == subject.casefold()].sort_values("assessment_order")
@@ -24,10 +24,10 @@ def student_features(data: pd.DataFrame) -> pd.DataFrame:
             trends.append(float(recent[-1] - recent[0]) / max(len(recent) - 1, 1))
             if len(recent) >= 2:
                 dispersions.append(float(np.std(recent, ddof=1)))
-            coverage += min(len(s), 3)
+            subject_counts.append(len(s))
             by_subject[subject] = round(float(np.mean(recent)), 1)
         first = student.iloc[0]
-        complete = len(scores) == 3 and coverage >= 6
+        complete = len(scores) == 3 and all(count >= 3 for count in subject_counts)
         avg = float(np.mean(scores)) if scores else np.nan
         trend = float(np.mean(trends)) if trends else 0.0
         volatility = float(np.mean(dispersions)) if dispersions else np.nan
@@ -139,6 +139,45 @@ def allocate(features: pd.DataFrame, bottom_on: int = 10, overrides: dict | None
 
 def attention_count(n: int, percent: int) -> int:
     return math.ceil(n * percent / 100)
+
+
+def triage(features: pd.DataFrame, target: float = 65) -> pd.DataFrame:
+    """Transparent descriptive priority; never present heuristic probabilities."""
+    out = features.copy()
+    observations = []
+    for row in out.itertuples():
+        score = row.rata_terkini
+        trend = row.tren
+        volatility = row.fluktuasi
+        gap = target - score if np.isfinite(score) else np.nan
+        if not row.data_memadai:
+            level, reason, action = ("Data terbatas", "Tiga nilai per mapel utama belum lengkap.",
+                                     "Lengkapi TO terlebih dahulu; jangan simpulkan kesiapan siswa.")
+        elif gap > 10 or (gap > 0 and trend < -3):
+            level = "Prioritas tinggi"
+            reason = f"Rata-rata {score:.1f}; selisih {gap:.1f} dari target; tren {trend:+.1f}/TO."
+            action = f"Guru {row.mapel_terlemah}: periksa kesalahan TO, tentukan satu fokus, cek ulang setelah TO berikutnya."
+        elif gap > 0 or trend < -2 or (np.isfinite(volatility) and volatility >= 12):
+            level = "Perlu dipantau"
+            reason = f"Rata-rata {score:.1f}; tren {trend:+.1f}/TO; fluktuasi {volatility:.1f}."
+            action = f"Guru {row.mapel_terlemah}: tinjau nilai terakhir dan tetapkan satu langkah pada TO berikutnya."
+        else:
+            level = "Relatif siap"
+            reason = f"Rata-rata {score:.1f}; tren {trend:+.1f}/TO; fluktuasi {volatility:.1f}."
+            action = "Jaga konsistensi, jangan menambah latihan tanpa indikasi kebutuhan."
+        potential = bool(row.data_memadai and 0 < gap <= 15 and trend >= 0
+                         and np.isfinite(volatility) and volatility <= 12)
+        warning = bool(row.data_memadai and (trend < -2 or
+                       (np.isfinite(volatility) and volatility >= 12)))
+        category_weight = {"Prioritas tinggi": 3, "Perlu dipantau": 2,
+                           "Data terbatas": 1, "Relatif siap": 0}[level]
+        urgency = (category_weight * 100 + min(max(gap, 0), 30) if np.isfinite(gap) else 100)
+        if row.data_memadai and trend < 0:
+            urgency += min(abs(trend), 10)
+        observations.append((level, reason, action, potential, warning, urgency))
+    out[["status", "alasan_utama", "langkah_berikutnya", "potensi_naik",
+         "peringatan_dini", "urutan_perhatian"]] = pd.DataFrame(observations, index=out.index)
+    return out
 
 
 def select_assessments(data: pd.DataFrame, provider: str) -> pd.DataFrame:

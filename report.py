@@ -1,4 +1,4 @@
-"""Deterministic student commentary and an on-demand, two-page PDF report.
+"""Deterministic student commentary and an on-demand, one-page PDF report.
 
 Only anonymized test data is bundled; no student values or teacher notes persist.
 """
@@ -17,8 +17,7 @@ from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
-from reportlab.platypus import (KeepTogether, PageBreak, Paragraph,
-                                SimpleDocTemplate, Spacer, Table, TableStyle)
+from reportlab.platypus import KeepTogether, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 from allocation import SUBJECTS
 
@@ -34,7 +33,7 @@ def student_analysis(student: pd.DataFrame, target: float = 65) -> dict:
         part = part.sort_values("assessment_order", kind="stable")
         values = part.score.to_numpy(float)
         if not len(values):
-            subjects.append({"mapel": subject, "n": 0, "mean": None, "trend": None,
+            subjects.append({"mapel": subject, "n": 0, "mean": None, "all_mean": None, "trend": None,
                              "volatility": None, "last": [], "interpretasi": "Belum ada nilai TO."})
             continue
         recent = values[-3:]
@@ -62,6 +61,7 @@ def student_analysis(student: pd.DataFrame, target: float = 65) -> dict:
             interpretation = (f"Rata-rata tiga TO {mean:.1f} telah mencapai target; "
                               "pertahankan latihan dan pantau kestabilannya.")
         subjects.append({"mapel": subject, "n": len(values), "mean": mean,
+                         "all_mean": float(np.mean(values)),
                          "trend": trend, "volatility": volatility,
                          "last": [round(float(v), 1) for v in recent], "interpretasi": interpretation})
 
@@ -106,12 +106,9 @@ def _font_names():
     return "Helvetica", "Helvetica-Bold"
 
 
-def build_report(analysis: dict, teacher_notes: dict | None = None,
-                 homeroom_note: str = "", next_review: str = "",
-                 printed_on: date | None = None, scope: str = "Semua siswa",
-                 demo: bool = False) -> bytes:
-    """Return a static PDF in memory; no server file and no write to the Sheet."""
-    teacher_notes = teacher_notes or {}
+def build_report(analysis: dict, printed_on: date | None = None,
+                 scope: str = "Semua siswa", demo: bool = False) -> bytes:
+    """Return a one-page student analysis PDF without teacher input fields."""
     printed_on = printed_on or date.today()
     buffer = BytesIO()
     regular, bold = _font_names()
@@ -154,14 +151,14 @@ def build_report(analysis: dict, teacher_notes: dict | None = None,
              p(f"Kelas {analysis['kelas']}  |  Status TKA: {analysis['status_tka']}  |  "
                f"Target {analysis['target']:g}  |  ID: {analysis['student_id']}", "SmallLab"),
              p("Ringkasan tiga mata pelajaran", "H2Lab")]
-    headings = ["Mapel", "3 TO terakhir", "Rata-rata", "Arah", "Sebaran"]
+    headings = ["Mapel", "3 TO terakhir", "Semua", "Terakhir", "Arah"]
     rows = [[p(x, "CellBoldLab") for x in headings]]
     for s in analysis["subjects"]:
         rows.append([p(s["mapel"], "CellLab"), p(" / ".join(f"{v:g}" for v in s["last"]) or "-", "CellLab"),
+                     p(f"{s['all_mean']:.1f}" if s["all_mean"] is not None else "-", "CellLab"),
                      p(f"{s['mean']:.1f}" if s["mean"] is not None else "-", "CellLab"),
-                     p(f"{s['trend']:+.1f}/TO" if s["trend"] is not None else "Belum cukup", "CellLab"),
-                     p(f"{s['volatility']:.1f}" if s["volatility"] is not None else "-", "CellLab")])
-    grid = Table(rows, colWidths=[41*mm, 49*mm, 25*mm, 29*mm, 24*mm], repeatRows=1)
+                     p(f"{s['trend']:+.1f}/TO" if s["trend"] is not None else "Belum cukup", "CellLab")])
+    grid = Table(rows, colWidths=[40*mm, 48*mm, 24*mm, 25*mm, 31*mm], repeatRows=1)
     grid.setStyle(TableStyle([("BACKGROUND", (0,0),(-1,0),sage),
                               ("ROWBACKGROUNDS",(0,1),(-1,-1),[colors.white, colors.HexColor("#f7faf8")]),
                               ("LINEBELOW",(0,-1),(-1,-1),.5,colors.HexColor("#cbd8d1")),
@@ -174,30 +171,9 @@ def build_report(analysis: dict, teacher_notes: dict | None = None,
     for s in analysis["subjects"]:
         story.append(KeepTogether([p(s["mapel"], "CellBoldLab"), p(s["interpretasi"])]))
     story.extend([Spacer(1,4*mm),
-                  p("Metode: rata-rata, arah, dan simpangan baku pada hingga 3 TO terakhir per mapel. "
-                    "Kesulitan TO PENABUR dan HOLIS mungkin berbeda; perbandingan bukan ukuran sebab-akibat. "
-                    "Penilaian per-butir/topik memerlukan data jawaban yang tidak ada di laporan ini.", "SmallLab"),
-                  PageBreak(), p("Rencana perhatian siswa", "H1Lab"),
-                  p("Isian pada halaman ini tidak disimpan oleh aplikasi. Simpan PDF sebelum menutup sesi.", "SmallLab")])
-    for s in analysis["subjects"]:
-        entry = teacher_notes.get(s["mapel"], {})
-        focus = str(entry.get("fokus", "")).strip() or "Belum diisi"
-        action = str(entry.get("tindakan", "")).strip() or "Belum diisi"
-        goal = str(entry.get("target", "")).strip() or "Belum diisi"
-        box = Table([[p(s["mapel"], "CellBoldLab")],
-                     [p("Fokus: " + focus, "CellLab")],
-                     [p("Tindakan guru: " + action, "CellLab")],
-                     [p("Indikator TO berikutnya: " + goal, "CellLab")]], colWidths=[168*mm])
-        box.setStyle(TableStyle([("BACKGROUND",(0,0),(-1,0),sage),
-                                 ("BOX",(0,0),(-1,-1),.5,colors.HexColor("#cbd8d1")),
-                                 ("VALIGN",(0,0),(-1,-1),"TOP"),
-                                 ("TOPPADDING",(0,0),(-1,-1),5),
-                                 ("BOTTOMPADDING",(0,0),(-1,-1),5)]))
-        story.extend([box, Spacer(1,4*mm)])
-    story.extend([p("Catatan wali kelas", "H2Lab"),
-                  p(homeroom_note.strip() or "Belum diisi"),
-                  p("Pemeriksaan berikutnya: " + (next_review.strip() or "Belum diisi")),
-                  Spacer(1,5*mm),
-                  p(f"Cakupan ranking/dashboard saat dibuat: {scope}. Tanggal cetak: {printed_on:%d-%m-%Y}.", "SmallLab")])
+                  p("Metode: rata-rata semua TO dan 3 TO terakhir per mapel. Perbedaan kesulitan TO "
+                    "PENABUR dan HOLIS tidak dikoreksi. Sebelum menentukan topik latihan, "
+                    "guru perlu meninjau jawaban per butir.", "SmallLab"),
+                  p(f"Cakupan ranking/dashboard: {scope}. Tanggal cetak: {printed_on:%d-%m-%Y}.", "SmallLab")])
     doc.build(story, onFirstPage=frame, onLaterPages=frame)
     return buffer.getvalue()
