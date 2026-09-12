@@ -7,7 +7,7 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
-from allocation import (allocate, attention_count, ranking, select_assessments,
+from allocation import (allocate, assessment_chart_data, attention_count, ranking, select_assessments,
                         student_features, triage)
 from briefing import homeroom_brief, remaining_to, role_pdf, subject_brief
 from engine import CORE, SourceError, fetch_gas, simulate
@@ -48,29 +48,26 @@ def overview_card(label, value, note, accent):
                 unsafe_allow_html=True)
 
 
-def cohort_chart(frame):
-    observed = select_assessments(frame[frame.score.notna()], "Gabungan")
-    if observed.empty:
-        st.info("Belum ada nilai TO untuk menggambar tren pada cakupan ini.")
+def cohort_chart(frame, provider):
+    grouped = assessment_chart_data(frame, provider)
+    if grouped.empty:
+        st.info("Belum ada kode dan nilai TO " + provider + " yang dapat digambar pada cakupan ini.")
         return
-    grouped = observed.groupby(["assessment_order", "mapel"], as_index=False).agg(
-        rerata=("score", "mean"), siswa=("student_id", "nunique"))
-    grouped["TO"] = "TO " + grouped.assessment_order.astype(int).astype(str)
     fig = px.bar(grouped, x="TO", y="rerata", color="mapel", barmode="group",
                  hover_data={"siswa": True, "rerata": ":.1f", "TO": False},
                  labels={"rerata": "Rata-rata nilai", "mapel": "Mata pelajaran", "siswa": "Siswa bernilai"},
                  color_discrete_map={"Bahasa Inggris": "#FFC842", "Bahasa Indonesia": "#35D3A1",
                                      "Matematika": "#8899FF"},
                  category_orders={"mapel": ["Bahasa Inggris", "Bahasa Indonesia", "Matematika"],
-                                  "TO": ["TO " + str(i) for i in sorted(grouped.assessment_order.unique())]})
+                                  "TO": ["TO " + str(i) for i in sorted(grouped.putaran.unique())]})
     fig.update_traces(texttemplate="%{y:.0f}", textposition="outside", cliponaxis=False,
                       textfont=dict(size=11))
     fig.update_layout(height=420, paper_bgcolor="#152032", plot_bgcolor="#152032",
                       font=dict(color="#F2F6FF", size=13), legend=dict(orientation="h", y=1.12,
                       x=0, title_text="", font=dict(color="#F2F6FF")),
-                      margin=dict(l=25, r=25, t=80, b=30), bargap=.24)
+                      margin=dict(l=25, r=25, t=80, b=55), bargap=.24)
     fig.update_xaxes(showgrid=False, linecolor="#526078", tickfont=dict(color="#DFE8FA"),
-                     title_text="Urutan TO")
+                     title_text="")
     fig.update_yaxes(range=[0, 110], gridcolor="#354159", zeroline=False,
                      tickfont=dict(color="#DFE8FA"), title_font=dict(color="#F2F6FF"))
     st.plotly_chart(fig, theme=None, width="stretch")
@@ -327,13 +324,19 @@ if tabs[2].open:
                               f"rata 3 TO ≥ {target:g}; data memadai", "#229e91")
         with e: overview_card("Perlu perhatian", int(scoped.status.isin(["Prioritas tinggi", "Perlu dipantau"]).sum()),
                               "indikasi, bukan vonis TKA", "#e8636b")
+        chart_source = st.selectbox("Sumber grafik TO", ["PENABUR", "HOLIS"],
+                                    format_func=lambda source: "BPK PENABUR" if source == "PENABUR" else "Internal HOLIS",
+                                    key="chart_provider")
         st.markdown('<div style="background:#152032;border-radius:18px;padding:18px 25px 2px;'
                     'margin-top:16px"><div style="color:#fff;font-size:20px;font-weight:750">'
-                    'Tren skor per mapel dan TO</div><div style="color:#cbd5e4">'
-                    'Rata-rata siswa yang punya nilai; jumlah siswa bisa berbeda antar-TO.</div></div>',
+                    'Tren skor TO ' + ('BPK PENABUR' if chart_source == 'PENABUR' else 'internal HOLIS') +
+                    '</div><div style="color:#cbd5e4">Rata-rata siswa yang punya nilai; '
+                    'mapel tanpa nilai tidak ditampilkan.</div></div>',
                     unsafe_allow_html=True)
-        cohort_chart(data[data.student_id.isin(scoped.student_id)])
-        st.caption("Gabungan TO PENABUR dan HOLIS sesuai urutan kolom API. Perubahan rerata juga dapat dipengaruhi peserta, jumlah nilai, atau kesulitan TO.")
+        cohort_chart(data[data.student_id.isin(scoped.student_id)], chart_source)
+        st.caption("PENABUR: MT/BI/BIG 01, 02, 03; HOLIS: MTH/BIH/BIGH menurut nomor TO masing-masing. "
+                   "Jika Bahasa Inggris belum ada pada TO PENABUR 1–3, grafik hanya menampilkan Matematika dan Bahasa Indonesia. "
+                   "Perubahan rerata juga dipengaruhi peserta, jumlah nilai, dan kesulitan TO.")
         n_tka = int(all_features.status_tka.str.casefold().eq("ikut").sum())
         n_ready_tka = int((all_features.status_tka.str.casefold().eq("ikut") &
                            all_features.data_memadai).sum())
@@ -354,11 +357,14 @@ if tabs[2].open:
                 original = original.merge(overall, on="student_id", how="left")
                 incomplete = original[~original.data_memadai]
                 if not incomplete.empty:
-                    st.warning(f"{len(incomplete)} nonpeserta TKA dengan data kurang ditempatkan sementara di On. "
-                               "Ini bukan penilaian kemampuan; cek rincian nilai dan lengkapi data.")
-                    with st.expander("Lihat alasan siswa ditempatkan sementara di On", expanded=True):
+                    sparse_tka = int(incomplete.status_tka.str.casefold().eq("ikut").sum())
+                    sparse_non = len(incomplete) - sparse_tka
+                    st.warning(f"Data kurang: {sparse_tka} peserta TKA masuk Am sementara; "
+                               f"{sparse_non} nonpeserta masuk On sementara. "
+                               "Keduanya bukan penilaian kemampuan. Lengkapi nilai untuk meninjau ulang usulan.")
+                    with st.expander("Lihat alasan penempatan sementara", expanded=True):
                         table(incomplete, ["nama", "kelas_asal", "status_tka", "jumlah_nilai",
-                                           "Peringkat sekolah (3 TO)", "alasan"])
+                                           "Peringkat sekolah (3 TO)", "rekomendasi", "alasan"])
                 summary = (original.groupby("rekomendasi").agg(Siswa=("student_id", "size"),
                            Peserta_TKA=("status_tka", lambda v:int(v.str.casefold().eq("ikut").sum())),
                            Median_nilai=("rata_terkini", "median"))

@@ -73,17 +73,11 @@ def allocate(features: pd.DataFrame, bottom_on: int = 10, overrides: dict | None
     if bottom_on < 0 or bottom_on > caps["On"]:
         raise ValueError("Jumlah siswa terbawah untuk On harus 0–29.")
     incomplete = df[~df["data_memadai"] | df["skor_penempatan"].isna()].copy()
-    if len(incomplete) > caps["On"]:
-        raise ValueError(f"{len(incomplete)} siswa memiliki data kurang, sedangkan On hanya {caps['On']} kursi. "
-                         "Tidak ada penempatan yang memenuhi keduanya; periksa kapasitas atau lengkapi data.")
     incomplete_tka = incomplete[incomplete.status_tka.str.casefold().eq("ikut")]
-    if not incomplete_tka.empty:
-        raise ValueError(
-            f"Ada {len(incomplete_tka)} peserta TKA dengan data kurang. Aturan terbaru mewajibkan "
-            "semua peserta TKA masuk Fu/Ch/Am, sementara aturan data kurang mengharuskan On. "
-            "Keduanya tidak dapat dipenuhi sekaligus: periksa nilai peserta TKA tersebut "
-            "sebelum menerbitkan usulan kelas. Tidak ada peserta TKA yang otomatis dipindah ke On."
-        )
+    incomplete_non_tka = incomplete[incomplete.status_tka.str.casefold().eq("tidak ikut")]
+    if len(incomplete_non_tka) > caps["On"]:
+        raise ValueError(f"{len(incomplete_non_tka)} nonpeserta TKA memiliki data kurang, sedangkan On hanya {caps['On']} kursi. "
+                         "Tidak ada penempatan yang memenuhi keduanya; periksa kapasitas atau lengkapi data.")
     ready = df[~df.student_id.isin(incomplete.student_id)]
     participants = ready[ready["status_tka"].str.casefold() == "ikut"].sort_values(
         ["kecocokan_fu", "skor_penempatan", "student_id"], ascending=[False, False, True])
@@ -97,10 +91,11 @@ def allocate(features: pd.DataFrame, bottom_on: int = 10, overrides: dict | None
             f"kurang {required-len(participants)}. Periksa status TKA pada PesertaTKA; "
             "nonpeserta tidak akan dimasukkan ke Fu/Ch."
         )
-    if len(participants) > sum(caps[g] for g in ("Fu", "Ch", "Am")):
-        raise ValueError("Peserta TKA dengan data memadai melebihi kapasitas Fu + Ch + Am (82).")
+    if len(participants) + len(incomplete_tka) > sum(caps[g] for g in ("Fu", "Ch", "Am")):
+        raise ValueError("Jumlah peserta TKA melebihi kapasitas Fu + Ch + Am (82).")
 
-    assigned = {sid: "On" for sid in incomplete.student_id}
+    assigned = {sid: "On" for sid in incomplete_non_tka.student_id}
+    assigned.update({sid: "Am" for sid in incomplete_tka.student_id})
     for sid in participants.head(caps["Fu"])["student_id"]:
         assigned[sid] = "Fu"
     remaining_tka = participants[~participants["student_id"].isin(assigned)].sort_values(
@@ -116,9 +111,9 @@ def allocate(features: pd.DataFrame, bottom_on: int = 10, overrides: dict | None
             assigned[sid] = group
         offset += vacancies
     lower = others.iloc[offset:]
-    if len(lower) != caps["Pi"] + caps["On"] - len(incomplete):
+    if len(lower) != caps["Pi"] + caps["On"] - len(incomplete_non_tka):
         raise ValueError("Jumlah siswa kelompok bawah tidak sesuai kapasitas.")
-    bottom_ids = set(lower.tail(min(len(lower), max(0, bottom_on - len(incomplete)))).student_id)
+    bottom_ids = set(lower.tail(min(len(lower), max(0, bottom_on - len(incomplete_non_tka)))).student_id)
     for sid in bottom_ids:
         assigned[sid] = "On"
     remaining_lower = lower[~lower["student_id"].isin(bottom_ids)]
@@ -136,8 +131,12 @@ def allocate(features: pd.DataFrame, bottom_on: int = 10, overrides: dict | None
         raise ValueError("Perubahan manual harus memakai ID unik dan kelompok Fu/Ch/Am/Pi/On.")
     tka_ids = set(participants["student_id"])
     incomplete_ids = set(incomplete.student_id)
-    if any(sid in incomplete_ids and group != "On" for sid, group in overrides.items()):
-        raise ValueError("Siswa dengan data kurang tetap di On sampai datanya memadai.")
+    incomplete_tka_ids = set(incomplete_tka.student_id)
+    incomplete_non_tka_ids = set(incomplete_non_tka.student_id)
+    if any(sid in incomplete_non_tka_ids and group != "On" for sid, group in overrides.items()):
+        raise ValueError("Nonpeserta dengan data kurang tetap di On sampai datanya memadai.")
+    if any(sid in incomplete_tka_ids and group != "Am" for sid, group in overrides.items()):
+        raise ValueError("Peserta TKA dengan data kurang tetap di Am sementara sampai datanya memadai.")
     if any(sid in tka_ids and group in ("Pi", "On") for sid, group in overrides.items()):
         raise ValueError("Peserta TKA dengan data memadai tidak boleh ke Pi atau On.")
     if any(sid not in tka_ids and group in ("Fu", "Ch") for sid, group in overrides.items()):
@@ -162,9 +161,9 @@ def allocate(features: pd.DataFrame, bottom_on: int = 10, overrides: dict | None
 
     df["rekomendasi"] = df["student_id"].map(assigned)
     df["alasan"] = df.apply(lambda r: (
-        "On sementara karena " + r.alasan_data +
-        (" Status TKA: ikut; pengecualian sementara yang perlu ditinjau sekolah."
-         if r.status_tka.casefold() == "ikut" else "") if r.student_id in incomplete_ids else
+        ("Am sementara karena " + r.alasan_data + " Peserta TKA: data perlu dilengkapi; "
+         "penempatan ini bukan penilaian kemampuan.") if r.student_id in incomplete_tka_ids else
+        "On sementara karena " + r.alasan_data if r.student_id in incomplete_non_tka_ids else
         "Penempatan manual (pertukaran aman)" if r.student_id in locked else
         "Fu: skor kuat dan stabil" if r.rekomendasi == "Fu" else
         "Ch: indikator ruang berkembang" if r.rekomendasi == "Ch" else
@@ -240,6 +239,34 @@ def select_assessments(data: pd.DataFrame, provider: str) -> pd.DataFrame:
     if provider == "PENABUR":
         return data[penabur].copy()
     return data[holis | penabur].copy()
+
+
+def assessment_chart_data(data: pd.DataFrame, provider: str) -> pd.DataFrame:
+    """Compare like-for-like TO rounds by code, never global per-subject column order.
+
+    MT01/BI01 are PENABUR TO 1; MTH01/BIH01/BIGH01 are HOLIS TO 1.
+    A missing English score remains absent; it is never shifted or filled in.
+    """
+    columns = ["putaran", "TO", "mapel", "rerata", "siswa"]
+    if provider not in ("PENABUR", "HOLIS") or "assessment_code" not in data:
+        return pd.DataFrame(columns=columns)
+    prefixes = ({"MT": "Matematika", "BI": "Bahasa Indonesia", "BIG": "Bahasa Inggris"}
+                if provider == "PENABUR" else
+                {"MTH": "Matematika", "BIH": "Bahasa Indonesia", "BIGH": "Bahasa Inggris"})
+    scored = data[data.score.notna()].copy()
+    codes = scored.assessment_code.fillna("").astype(str).str.strip().str.upper()
+    parts = codes.str.extract(r"^(MTH|BIH|BIGH|BIG|MT|BI)(\d+)$")
+    scored["prefix"] = parts[0].to_numpy()
+    scored["putaran"] = pd.to_numeric(parts[1], errors="coerce").to_numpy()
+    scored = scored[scored.prefix.isin(prefixes) &
+                    scored.mapel.eq(scored.prefix.map(prefixes))].copy()
+    if scored.empty:
+        return pd.DataFrame(columns=columns)
+    scored["putaran"] = scored.putaran.astype(int)
+    grouped = scored.groupby(["putaran", "mapel"], as_index=False).agg(
+        rerata=("score", "mean"), siswa=("student_id", "nunique"))
+    grouped["TO"] = "TO " + grouped.putaran.astype(str)
+    return grouped[columns].sort_values(["putaran", "mapel"], kind="stable").reset_index(drop=True)
 
 
 def ranking(data: pd.DataFrame, last_n: int | None = None) -> pd.DataFrame:
