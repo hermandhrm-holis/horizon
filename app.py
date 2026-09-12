@@ -335,7 +335,12 @@ if tabs[2].open:
         cohort_chart(data[data.student_id.isin(scoped.student_id)])
         st.caption("Gabungan TO PENABUR dan HOLIS sesuai urutan kolom API. Perubahan rerata juga dapat dipengaruhi peserta, jumlah nilai, atau kesulitan TO.")
         n_tka = int(all_features.status_tka.str.casefold().eq("ikut").sum())
-        st.write(f"**{len(all_features)} siswa**, **{n_tka} peserta TKA** teridentifikasi.")
+        n_ready_tka = int((all_features.status_tka.str.casefold().eq("ikut") &
+                           all_features.data_memadai).sum())
+        st.write(f"**{len(all_features)} siswa**, **{n_tka} peserta TKA** teridentifikasi; "
+                 f"**{n_ready_tka} peserta** memiliki minimal 3 nilai di masing-masing mapel utama.")
+        st.caption("Fu (21) dan Ch (31) harus 100% peserta TKA. Sisa peserta TKA masuk Am lebih dahulu; "
+                   "hanya nonpeserta yang mengisi kekurangan Am, lalu Pi dan On.")
         if len(all_features) != 140 or not all_features.status_tka.str.casefold().isin(["ikut", "tidak ikut"]).all():
             st.warning("Usulan kelas ditahan sampai 140 siswa dan status peserta TKA seluruh siswa lengkap.")
         else:
@@ -349,10 +354,8 @@ if tabs[2].open:
                 original = original.merge(overall, on="student_id", how="left")
                 incomplete = original[~original.data_memadai]
                 if not incomplete.empty:
-                    exceptional = int(incomplete.status_tka.str.casefold().eq("ikut").sum())
-                    st.warning(f"{len(incomplete)} siswa dengan data kurang ditempatkan sementara di On; "
-                               f"{exceptional} di antaranya peserta TKA. Ini pengecualian sementara, "
-                               "bukan penilaian kemampuan. Cek rincian jumlah nilai dan lengkapi data.")
+                    st.warning(f"{len(incomplete)} nonpeserta TKA dengan data kurang ditempatkan sementara di On. "
+                               "Ini bukan penilaian kemampuan; cek rincian nilai dan lengkapi data.")
                     with st.expander("Lihat alasan siswa ditempatkan sementara di On", expanded=True):
                         table(incomplete, ["nama", "kelas_asal", "status_tka", "jumlah_nilai",
                                            "Peringkat sekolah (3 TO)", "alasan"])
@@ -360,9 +363,18 @@ if tabs[2].open:
                            Peserta_TKA=("status_tka", lambda v:int(v.str.casefold().eq("ikut").sum())),
                            Median_nilai=("rata_terkini", "median"))
                            .reindex(["Fu", "Ch", "Am", "Pi", "On"]).round(1).reset_index())
+                summary.insert(1, "Target kursi", summary.rekomendasi.map(
+                    {"Fu":21, "Ch":31, "Am":30, "Pi":29, "On":29}))
+                summary = summary.rename(columns={"rekomendasi":"Kelompok", "Siswa":"Total siswa",
+                                                  "Peserta_TKA":"Ikut TKA (bagian dari total)",
+                                                  "Median_nilai":"Median nilai"})
+                st.caption("Kolom Total siswa = penghuni kelas. Fu dan Ch wajib seluruhnya ikut TKA; "
+                           "kolom Ikut TKA adalah bagian dari total tersebut di Am/Pi/On.")
                 table(summary)
                 group = st.selectbox("Lihat kelompok", ["Semua", "Fu", "Ch", "Am", "Pi", "On"])
                 view = original if group == "Semua" else original[original.rekomendasi == group]
+                st.write(f"**{group}: {len(view)} siswa**" +
+                         (" (target Fu 21, Ch 31, Am 30, Pi 29, On 29)" if group == "Semua" else ""))
                 table(view, ["nama", "kelas_asal", "status_tka", "Peringkat sekolah (3 TO)",
                              "jumlah_nilai", "rata_terkini", "tren", "fluktuasi",
                              "potensi_pengembangan", "rekomendasi", "alasan"])

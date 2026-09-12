@@ -57,12 +57,12 @@ def student_features(data: pd.DataFrame) -> pd.DataFrame:
 
 def capacities(n: int) -> dict:
     if n != 140:
-        raise ValueError(f"Rancangan Fu 21, Ch 30, Am 30, Pi 30, On 29 membutuhkan tepat 140 siswa; data saat ini {n}.")
-    return {"Fu": 21, "Ch": 30, "Am": 30, "Pi": 30, "On": 29}
+        raise ValueError(f"Rancangan Fu 21, Ch 31, Am 30, Pi 29, On 29 membutuhkan tepat 140 siswa; data saat ini {n}.")
+    return {"Fu": 21, "Ch": 31, "Am": 30, "Pi": 29, "On": 29}
 
 
 def allocate(features: pd.DataFrame, bottom_on: int = 10, overrides: dict | None = None) -> pd.DataFrame:
-    """Place incomplete records in On; use available scores for all other placements."""
+    """Keep Fu/Ch TKA-only, prioritize remaining TKA in Am and flag sparse data."""
     df = features.copy()
     if df["student_id"].duplicated().any():
         raise ValueError("ID siswa ganda; penempatan dibatalkan.")
@@ -76,13 +76,29 @@ def allocate(features: pd.DataFrame, bottom_on: int = 10, overrides: dict | None
     if len(incomplete) > caps["On"]:
         raise ValueError(f"{len(incomplete)} siswa memiliki data kurang, sedangkan On hanya {caps['On']} kursi. "
                          "Tidak ada penempatan yang memenuhi keduanya; periksa kapasitas atau lengkapi data.")
+    incomplete_tka = incomplete[incomplete.status_tka.str.casefold().eq("ikut")]
+    if not incomplete_tka.empty:
+        raise ValueError(
+            f"Ada {len(incomplete_tka)} peserta TKA dengan data kurang. Aturan terbaru mewajibkan "
+            "semua peserta TKA masuk Fu/Ch/Am, sementara aturan data kurang mengharuskan On. "
+            "Keduanya tidak dapat dipenuhi sekaligus: periksa nilai peserta TKA tersebut "
+            "sebelum menerbitkan usulan kelas. Tidak ada peserta TKA yang otomatis dipindah ke On."
+        )
     ready = df[~df.student_id.isin(incomplete.student_id)]
     participants = ready[ready["status_tka"].str.casefold() == "ikut"].sort_values(
         ["kecocokan_fu", "skor_penempatan", "student_id"], ascending=[False, False, True])
     others = ready[ready["status_tka"].str.casefold() == "tidak ikut"].sort_values(
         ["skor_penempatan", "student_id"], ascending=[False, True])
+    required = caps["Fu"] + caps["Ch"]
+    if len(participants) < required:
+        raise ValueError(
+            f"Fu dan Ch wajib diisi {required} peserta TKA dengan data memadai "
+            f"(Fu {caps['Fu']}, Ch {caps['Ch']}). Saat ini tersedia {len(participants)}; "
+            f"kurang {required-len(participants)}. Periksa status TKA pada PesertaTKA; "
+            "nonpeserta tidak akan dimasukkan ke Fu/Ch."
+        )
     if len(participants) > sum(caps[g] for g in ("Fu", "Ch", "Am")):
-        raise ValueError("Peserta TKA melebihi kapasitas Fu + Ch + Am (81).")
+        raise ValueError("Peserta TKA dengan data memadai melebihi kapasitas Fu + Ch + Am (82).")
 
     assigned = {sid: "On" for sid in incomplete.student_id}
     for sid in participants.head(caps["Fu"])["student_id"]:
@@ -94,7 +110,7 @@ def allocate(features: pd.DataFrame, bottom_on: int = 10, overrides: dict | None
     for sid in remaining_tka.iloc[caps["Ch"]:]["student_id"]:
         assigned[sid] = "Am"
     offset = 0
-    for group in ("Fu", "Ch", "Am"):
+    for group in ("Am",):
         vacancies = caps[group] - sum(v == group for v in assigned.values())
         for sid in others.iloc[offset:offset + vacancies].student_id:
             assigned[sid] = group
@@ -124,6 +140,8 @@ def allocate(features: pd.DataFrame, bottom_on: int = 10, overrides: dict | None
         raise ValueError("Siswa dengan data kurang tetap di On sampai datanya memadai.")
     if any(sid in tka_ids and group in ("Pi", "On") for sid, group in overrides.items()):
         raise ValueError("Peserta TKA dengan data memadai tidak boleh ke Pi atau On.")
+    if any(sid not in tka_ids and group in ("Fu", "Ch") for sid, group in overrides.items()):
+        raise ValueError("Fu dan Ch hanya boleh diisi peserta TKA dengan data memadai.")
     # Swaps preserve exact capacities. Locked assignments cannot themselves be moved.
     locked = set(overrides)
     for sid, desired in overrides.items():
@@ -134,6 +152,8 @@ def allocate(features: pd.DataFrame, bottom_on: int = 10, overrides: dict | None
                         ~df["student_id"].isin(locked | incomplete_ids)]
         if current in ("Pi", "On"):
             candidates = candidates[candidates["status_tka"].str.casefold() == "tidak ikut"]
+        if current in ("Fu", "Ch"):
+            candidates = candidates[candidates["status_tka"].str.casefold() == "ikut"]
         if candidates.empty:
             raise ValueError(f"Tidak ada pertukaran aman untuk {sid} → {desired}; ubah daftar kunci.")
         ranks = candidates["skor_penempatan"] - float(df.loc[df.student_id == sid, "skor_penempatan"].iloc[0])
@@ -154,9 +174,12 @@ def allocate(features: pd.DataFrame, bottom_on: int = 10, overrides: dict | None
     ), axis=1)
     if df["rekomendasi"].value_counts().to_dict() != caps:
         raise AssertionError("Kapasitas penempatan tidak terpenuhi.")
-    if (df["status_tka"].str.casefold().eq("ikut") & df["data_memadai"] &
+    if (df["rekomendasi"].isin(["Fu", "Ch"]) &
+            ~df["status_tka"].str.casefold().eq("ikut")).any():
+        raise AssertionError("Fu/Ch berisi nonpeserta TKA; penempatan dibatalkan.")
+    if (df["status_tka"].str.casefold().eq("ikut") &
             df["rekomendasi"].isin(["Pi", "On"])).any():
-        raise AssertionError("Peserta TKA dengan data lengkap masuk kelompok bawah.")
+        raise AssertionError("Peserta TKA masuk kelompok bawah; penempatan dibatalkan.")
     return df.sort_values(["rekomendasi", "skor_penempatan"], ascending=[True, False])
 
 
