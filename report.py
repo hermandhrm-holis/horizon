@@ -44,22 +44,22 @@ def student_analysis(student: pd.DataFrame, target: float = 65) -> dict:
         if len(recent) < 3:
             interpretation = f"Baru {len(recent)} nilai; belum cukup untuk menyimpulkan tren atau kestabilan."
         elif volatility > 12:
-            interpretation = (f"Rata-rata tiga TO {mean:.1f}; variasi {volatility:.1f} poin. "
+            interpretation = (f"Rata-rata tiga TO {mean:.2f}; variasi {volatility:.1f} poin. "
                               "Periksa konsistensi dan perbedaan tingkat kesulitan TO sebelum menentukan tindakan.")
         elif mean < target and trend is not None and trend < -1:
-            interpretation = (f"Rata-rata tiga TO {mean:.1f}, di bawah target {target:g}; "
+            interpretation = (f"Rata-rata tiga TO {mean:.2f}, di bawah target {target:g}; "
                               f"arah nilai menurun ({trend:+.1f} poin/TO). Tinjau kembali hasil TO berikutnya.")
         elif mean < target and trend is not None and trend >= 1:
-            interpretation = (f"Rata-rata tiga TO {mean:.1f}, berjarak {target-mean:.1f} dari target; "
+            interpretation = (f"Rata-rata tiga TO {mean:.2f}, berjarak {target-mean:.2f} dari target; "
                               f"arah nilai naik ({trend:+.1f} poin/TO). Cocok untuk pemantauan penguatan terarah.")
         elif mean < target:
-            interpretation = (f"Rata-rata tiga TO {mean:.1f}, berjarak {target-mean:.1f} dari target; "
+            interpretation = (f"Rata-rata tiga TO {mean:.2f}, berjarak {target-mean:.2f} dari target; "
                               "belum terlihat kenaikan yang konsisten. Pilih satu fokus belajar untuk diuji pada TO berikutnya.")
         elif trend is not None and trend < -1:
-            interpretation = (f"Rata-rata tiga TO {mean:.1f} telah melampaui target, tetapi tren terbaru menurun "
+            interpretation = (f"Rata-rata tiga TO {mean:.2f} telah melampaui target, tetapi tren terbaru menurun "
                               f"({trend:+.1f} poin/TO). Jaga agar capaian tidak turun lebih jauh.")
         else:
-            interpretation = (f"Rata-rata tiga TO {mean:.1f} telah mencapai target; "
+            interpretation = (f"Rata-rata tiga TO {mean:.2f} telah mencapai target; "
                               "pertahankan latihan dan pantau kestabilannya.")
         subjects.append({"mapel": subject, "n": len(values), "mean": mean,
                          "all_mean": float(np.mean(values)),
@@ -70,7 +70,7 @@ def student_analysis(student: pd.DataFrame, target: float = 65) -> dict:
     if reliable:
         weakest = min(reliable, key=lambda s: (s["mean"], s["mapel"]))
         weakness = (f"Nilai terendah pada tiga TO terakhir adalah {weakest['mapel']} "
-                    f"(rata-rata {weakest['mean']:.1f}). Minta guru mapel meninjau butir/topik yang salah; "
+                    f"(rata-rata {weakest['mean']:.2f}). Minta guru mapel meninjau butir/topik yang salah; "
                     "nilai agregat belum menunjukkan topik penyebabnya.")
         opportunity = [s for s in reliable if s["mean"] < target and s["trend"] is not None
                        and s["trend"] >= 0 and s["volatility"] <= 12 and target-s["mean"] <= 15]
@@ -156,8 +156,8 @@ def build_report(analysis: dict, printed_on: date | None = None,
     rows = [[p(x, "CellBoldLab") for x in headings]]
     for s in analysis["subjects"]:
         rows.append([p(s["mapel"], "CellLab"), p(" / ".join(f"{v:g}" for v in s["last"]) or "-", "CellLab"),
-                     p(f"{s['all_mean']:.1f}" if s["all_mean"] is not None else "-", "CellLab"),
-                     p(f"{s['mean']:.1f}" if s["mean"] is not None else "-", "CellLab"),
+                     p(f"{s['all_mean']:.2f}" if s["all_mean"] is not None else "-", "CellLab"),
+                     p(f"{s['mean']:.2f}" if s["mean"] is not None else "-", "CellLab"),
                      p(f"{s['trend']:+.1f}/TO" if s["trend"] is not None else "Belum cukup", "CellLab")])
     grid = Table(rows, colWidths=[40*mm, 48*mm, 24*mm, 25*mm, 31*mm], repeatRows=1)
     grid.setStyle(TableStyle([("BACKGROUND", (0,0),(-1,0),sage),

@@ -36,7 +36,7 @@ def subject_brief(data: pd.DataFrame, target: float = 65) -> pd.DataFrame:
                 action = "Lengkapi nilai dan konfirmasi peserta TO sebelum memberi label."
             elif recent < target-10:
                 kind = "Prioritas tinggi"
-                reason = f"Rata semua {all_mean:.1f}; 3 TO terakhir {recent:.1f}, di bawah target {target:g}."
+                reason = f"Rata semua {all_mean:.2f}; 3 TO terakhir {recent:.2f}, di bawah target {target:g}."
                 action = "Periksa butir yang salah; pilih satu fokus penguatan dan cek pada TO berikutnya."
             elif n >= 6 and change <= -5:
                 kind = "Peringatan dini"
@@ -44,16 +44,16 @@ def subject_brief(data: pd.DataFrame, target: float = 65) -> pd.DataFrame:
                 action = "Periksa penyebab penurunan dan beda kesulitan TO; evaluasi lagi setelah TO berikutnya."
             elif recent < target:
                 kind = "Perlu penguatan"
-                reason = f"Rata semua {all_mean:.1f}; 3 TO terakhir {recent:.1f}; selisih {target-recent:.1f} ke target."
+                reason = f"Rata semua {all_mean:.2f}; 3 TO terakhir {recent:.2f}; selisih {target-recent:.2f} ke target."
                 action = "Pilih satu fokus dari jawaban salah; latihan terarah, lalu periksa TO berikutnya."
             else:
                 kind = "Jaga stabilitas"
-                reason = f"Rata semua {all_mean:.1f}; 3 TO terakhir {recent:.1f} telah melampaui target."
+                reason = f"Rata semua {all_mean:.2f}; 3 TO terakhir {recent:.2f} telah melampaui target."
                 action = "Pertahankan rutinitas dan lihat apakah skor bertahan pada TO berikutnya."
             records.append({"student_id":sid,"nama":str(first.nama),"kelas":str(first.kelas),
                             "status_tka":str(first.status_tka),"mapel":subject,"jumlah_to":n,
-                            "rata_semua_to":round(all_mean,1) if n else np.nan,
-                            "rata_3_to":round(recent,1) if n else np.nan,
+                            "rata_semua_to":round(all_mean,2) if n else np.nan,
+                            "rata_3_to":round(recent,2) if n else np.nan,
                             "perubahan_3_to":round(change,1) if n >= 6 else np.nan,
                             "kategori":kind,"alasan":reason,"saran_awal":action})
     return pd.DataFrame(records)
@@ -85,9 +85,9 @@ def homeroom_brief(subject_rows: pd.DataFrame) -> pd.DataFrame:
             action="Pertahankan rutinitas; bandingkan tiga TO berikutnya sebelum mengubah strategi."
         records.append({"student_id":sid,"nama":first.nama,"kelas":first.kelas,"status_tka":first.status_tka,
                         "mapel_fokus":weakest,"jumlah_sinyal":flags,"kategori_wk":kind,
-                        "langkah_wk":action,"rata_3_mapel":round(float(rows.rata_3_to.mean()),1)
+                        "langkah_wk":action,"rata_3_mapel":round(float(rows.rata_3_to.mean()),2)
                         if rows.rata_3_to.notna().any() else np.nan,
-                        "rata_semua_mapel":round(float(rows.rata_semua_to.mean()),1)
+                        "rata_semua_mapel":round(float(rows.rata_semua_to.mean()),2)
                         if rows.rata_semua_to.notna().any() else np.nan})
     return pd.DataFrame(records)
 
@@ -133,13 +133,13 @@ def role_pdf(rows: pd.DataFrame, role: str, scope: str, completed: int, remainin
         sid=str(row.student_id)
         note=str(actions.get(sid,"")).strip() or "........................................................................"
         if role == "Wali Kelas":
-            all_mean=f"{row.rata_semua_mapel:.1f}" if pd.notna(row.rata_semua_mapel) else "-"
-            latest=f"{row.rata_3_mapel:.1f}" if pd.notna(row.rata_3_mapel) else "-"
+            all_mean=f"{row.rata_semua_mapel:.2f}" if pd.notna(row.rata_semua_mapel) else "-"
+            latest=f"{row.rata_3_mapel:.2f}" if pd.notna(row.rata_3_mapel) else "-"
             line=f"{row.kategori_wk} | Semua TO: {all_mean} | 3 terakhir: {latest} | Fokus: {row.mapel_fokus}"
             reason=row.langkah_wk
         else:
-            before=f"{row.rata_semua_to:.1f}" if pd.notna(row.rata_semua_to) else "-"
-            after=f"{row.rata_3_to:.1f}" if pd.notna(row.rata_3_to) else "-"
+            before=f"{row.rata_semua_to:.2f}" if pd.notna(row.rata_semua_to) else "-"
+            after=f"{row.rata_3_to:.2f}" if pd.notna(row.rata_3_to) else "-"
             line=f"{row.kategori} | Semua TO: {before} | 3 terakhir: {after}"
             reason=f"{row.alasan} {row.saran_awal}"
         block=Table([[p(f"{i}. {row.nama} - {row.kelas}  ({row.status_tka})","BriefBold")],

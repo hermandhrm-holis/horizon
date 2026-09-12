@@ -10,7 +10,7 @@ import streamlit as st
 from allocation import (allocate, assessment_chart_data, attention_count, ranking, select_assessments,
                         student_features, triage)
 from briefing import homeroom_brief, remaining_to, role_pdf, subject_brief
-from engine import CORE, SourceError, fetch_gas, simulate
+from engine import CORE, SourceError, fetch_gas, simulate, simulation_guidance
 from report import build_report, student_analysis
 
 
@@ -54,13 +54,13 @@ def cohort_chart(frame, provider):
         st.info("Belum ada kode dan nilai TO " + provider + " yang dapat digambar pada cakupan ini.")
         return
     fig = px.bar(grouped, x="TO", y="rerata", color="mapel", barmode="group",
-                 hover_data={"siswa": True, "rerata": ":.1f", "TO": False},
+                 hover_data={"siswa": True, "rerata": ":.2f", "TO": False},
                  labels={"rerata": "Rata-rata nilai", "mapel": "Mata pelajaran", "siswa": "Siswa bernilai"},
                  color_discrete_map={"Bahasa Inggris": "#FFC842", "Bahasa Indonesia": "#35D3A1",
                                      "Matematika": "#8899FF"},
                  category_orders={"mapel": ["Bahasa Inggris", "Bahasa Indonesia", "Matematika"],
                                   "TO": ["TO " + str(i) for i in sorted(grouped.putaran.unique())]})
-    fig.update_traces(texttemplate="%{y:.0f}", textposition="outside", cliponaxis=False,
+    fig.update_traces(texttemplate="%{y:.2f}", textposition="outside", cliponaxis=False,
                       textfont=dict(size=11))
     fig.update_layout(height=420, paper_bgcolor="#152032", plot_bgcolor="#152032",
                       font=dict(color="#F2F6FF", size=13), legend=dict(orientation="h", y=1.12,
@@ -78,8 +78,13 @@ def table(frame, cols=None, key=None, height=430):
         st.info("Belum ada siswa atau data pada pilihan ini.")
         return None
     shown = frame[cols].reset_index(drop=True) if cols else frame.reset_index(drop=True)
+    averages = {"rata_terkini", "rata_semua_to", "rata_3_to", "rata_semua_mapel",
+                "rata_3_mapel", "skor", "Median nilai", "Median", "Rata semua TO",
+                "Rata 3 terakhir", "Proyeksi", "Rentang 10–90%"}
+    display_format = {col: st.column_config.NumberColumn(col, format="%.2f")
+                      for col in shown.columns if col in averages and pd.api.types.is_numeric_dtype(shown[col])}
     return st.dataframe(shown, hide_index=True, width="stretch", height=min(height, 45+36*(len(shown)+1)),
-                        key=key, on_select="rerun" if key else "ignore",
+                        column_config=display_format, key=key, on_select="rerun" if key else "ignore",
                         selection_mode="single-row" if key else "multi-row")
 
 
@@ -152,7 +157,7 @@ elif population == "Tidak Ikut":
 if school_class != "Semua kelas":
     scoped = scoped[scoped.kelas_asal.astype(str) == school_class]
 
-tabs = st.tabs(["Tindakan Hari Ini", "Siswa & Rapor", "Strategi Fu–On", "Kualitas Data"],
+tabs = st.tabs(["Tindakan Hari Ini", "Siswa & Rapor", "Strategi Fu–On", "Simulasi Skenario", "Kualitas Data"],
                key="decision_tab", on_change="rerun")
 
 if tabs[0].open:
@@ -368,7 +373,7 @@ if tabs[2].open:
                 summary = (original.groupby("rekomendasi").agg(Siswa=("student_id", "size"),
                            Peserta_TKA=("status_tka", lambda v:int(v.str.casefold().eq("ikut").sum())),
                            Median_nilai=("rata_terkini", "median"))
-                           .reindex(["Fu", "Ch", "Am", "Pi", "On"]).round(1).reset_index())
+                           .reindex(["Fu", "Ch", "Am", "Pi", "On"]).round(2).reset_index())
                 summary.insert(1, "Target kursi", summary.rekomendasi.map(
                     {"Fu":21, "Ch":31, "Am":30, "Pi":29, "On":29}))
                 summary = summary.rename(columns={"rekomendasi":"Kelompok", "Siswa":"Total siswa",
@@ -409,6 +414,101 @@ if tabs[2].open:
 
 if tabs[3].open:
     with tabs[3]:
+        st.subheader("Simulasi 5.000 skenario: siapa perlu tindakan?")
+        st.info("Angka seperti 64% berarti 3.200 dari 5.000 skenario **rata-rata TO mendatang** "
+                "berada di bawah target, **bukan 64% peluang gagal TKA resmi**. "
+                "Model memakai arah dan variasi lima nilai terakhir tiap mapel. "
+                "Hasil bergantung pada asumsi, bukan jaminan hasil intervensi.")
+        with st.expander("Bagaimana 5.000 skenario dihitung?", expanded=False):
+            st.write("Untuk setiap siswa dan mapel, model membaca paling banyak lima nilai terakhir, "
+                     "memperkirakan arah serta variasinya, lalu membuat 5.000 kemungkinan nilai TO mendatang. "
+                     "Rata-rata TO mendatang dari tiga mapel dibandingkan dengan target. "
+                     "Median dan rentang 10–90% menggambarkan sebaran skenario, bukan nilai ujian TKA resmi.")
+            st.write("Perubahan asumsi kenaikan hanya menunjukkan **bagaimana hasil model bergeser jika nilai "
+                     "mendatang naik sejumlah poin**; bukan bukti bahwa latihan tertentu akan menaikkannya.")
+            st.caption("Lebih banyak percobaan menstabilkan perhitungan, bukan memperbaiki asumsi atau "
+                       "mengkalibrasi probabilitas terhadap hasil TKA sebenarnya. Hasil tetap sama jika data dan pengaturan sama.")
+        st.markdown("**Cara membaca angka untuk tindakan**")
+        a, b, c = st.columns(3)
+        with a: overview_card("40% di bawah target", "Pantau + satu fokus", "Guru cek satu mapel; evaluasi TO berikutnya", "#27a68e")
+        with b: overview_card("64% di bawah target", "Penguatan terarah", "Guru pilih topik dari jawaban salah; cek TO berikutnya", "#df9c25")
+        with c: overview_card("75% di bawah target", "Koordinasi segera", "Wali kelas + guru mapel; tindak lanjut dan cek TO", "#dd6670")
+        st.caption("40% dan 64% sama-sama perlu dipantau, tetapi 64% ditindak lebih aktif. "
+                   "Batas kerja: <35% jaga stabilitas; 35–49% pantau; 50–69% penguatan; ≥70% koordinasi segera. "
+                   "Ini aturan prioritas internal, bukan ambang kelulusan TKA atau ukuran keberhasilan terapi belajar.")
+        if scoped.empty:
+            st.info("Tidak ada siswa dalam cakupan sidebar.")
+        elif to_remaining == 0:
+            st.info("Rencana 14 TO sudah teridentifikasi; tidak ada TO tersisa untuk disimulasikan.")
+        else:
+            provider = st.selectbox("Gunakan nilai TO", ["Gabungan", "PENABUR", "HOLIS"],
+                                    key="simulation_provider", help="Gabungan memakai dua sumber dengan tingkat kesulitan yang mungkin berbeda.")
+            if provider == "Gabungan":
+                st.warning("Tren gabungan mencampur TO PENABUR (MT/BI/BIG) dan internal HOLIS (MTH/BIH/BIGH). "
+                           "Bila kesulitannya berbeda, arah dan persentase skenario bisa menyesatkan. "
+                           "Bandingkan dengan pilihan sumber tunggal.")
+            future = st.slider("Berapa TO mendatang untuk diuji?", 1, to_remaining, min(3, to_remaining),
+                               key="simulation_future")
+            with st.expander("Uji asumsi kenaikan (opsional)"):
+                lifts = {subject: st.slider("Jika " + subject + " naik sebanyak (poin)", 0, 15, 0,
+                                             key="scenario_lift_" + str(i)) for i, subject in enumerate(CORE)}
+            if st.toggle("Jalankan 5.000 skenario", value=False, key="run_scenario"):
+                source = select_assessments(data[data.student_id.isin(scoped.student_id)], provider)
+                if source.empty:
+                    st.info("Belum ada nilai yang sesuai sumber TO dan cakupan ini.")
+                else:
+                    @st.cache_data(ttl=180, show_spinner="Menghitung 5.000 skenario per siswa...")
+                    def cached_simulation(frame, threshold, remaining, assumptions):
+                        return simulate(frame, threshold, remaining, 5000, dict(assumptions))
+
+                    scenario, _ = cached_simulation(source, target, future, tuple(lifts.items()))
+                    # Preserve students with no scored record under the selected provider.
+                    roster = scoped[["student_id", "nama", "kelas_asal", "status_tka"]].drop_duplicates("student_id")
+                    scenario = roster.merge(scenario.drop(columns=["nama", "status_tka", "kelas"], errors="ignore"),
+                                            on="student_id", how="left")
+                    scenario["status"] = scenario.status.fillna("Data terbatas")
+                    scenario["mapel_penghambat"] = scenario.mapel_penghambat.fillna("Belum ada nilai")
+                    scenario["Tindakan awal"] = scenario.apply(
+                        lambda row: simulation_guidance(row.peluang_belum_target, row.mapel_penghambat), axis=1)
+                    scenario["Skenario di bawah target"] = scenario.peluang_belum_target.map(
+                        lambda v: f"{v:.1%}" if pd.notna(v) else "Data kurang")
+                    scenario["Proyeksi"] = scenario.proyeksi.round(2)
+                    scenario["Rentang 10–90%"] = scenario.apply(
+                        lambda row: (f"{row.batas_bawah:.2f}–{row.batas_atas:.2f}"
+                                     if pd.notna(row.batas_bawah) else "Data kurang"), axis=1)
+                    ranked = scenario.sort_values(["peluang_belum_target", "student_id"],
+                                                  ascending=[False, True], na_position="last")
+                    a, b, c = st.columns(3)
+                    valid = scenario.peluang_belum_target.notna()
+                    with a: card("Siswa dianalisis", str(int(valid.sum())), "memiliki min. 3 nilai per mapel")
+                    with b: card("Koordinasi segera", str(int(scenario.peluang_belum_target.ge(.70).sum())), "≥70% skenario di bawah target")
+                    with c: card("Data perlu diperiksa", str(int((~valid).sum())), "tidak diberi persentase semu")
+                    if valid.any():
+                        chart = px.scatter(scenario.loc[valid], x="proyeksi", y="peluang_belum_target",
+                                           color="status", hover_name="nama", hover_data={"kelas_asal": True,
+                                           "mapel_penghambat": True, "proyeksi": ":.2f",
+                                           "peluang_belum_target": ":.1%"},
+                                           labels={"proyeksi": "Median rata-rata TO mendatang",
+                                                   "peluang_belum_target": "Skenario di bawah target",
+                                                   "kelas_asal": "Kelas asal", "mapel_penghambat": "Mapel fokus"},
+                                           color_discrete_map={"Prioritas tinggi": "#d65762",
+                                                               "Perlu dipantau": "#c88616",
+                                                               "Relatif siap": "#128367"})
+                        chart.update_yaxes(range=[0, 1.05], tickformat=".0%")
+                        chart.add_hline(y=.70, line_dash="dot", line_color="#a8434f")
+                        chart.add_vline(x=target, line_dash="dot", line_color="#386d5a")
+                        plot(chart)
+                    table(ranked, ["nama", "kelas_asal", "status_tka", "status", "Skenario di bawah target",
+                                   "Proyeksi", "Rentang 10–90%", "mapel_penghambat", "Tindakan awal"], height=580)
+                    st.caption(f"{len(scenario)} siswa dalam cakupan; 5.000 skenario acak per siswa. "
+                               "Persentase belum dikalibrasi memakai hasil TKA nyata; gunakan bersama review butir oleh guru.")
+                    if any(lifts.values()):
+                        st.caption("Angka pada tabel sudah memasukkan asumsi kenaikan yang Bapak atur. "
+                                   "Ubah slider ke 0 untuk membandingkan kondisi tanpa asumsi tambahan; "
+                                   "selisihnya bukan dampak intervensi yang terbukti.")
+
+if tabs[4].open:
+    with tabs[3]:
         st.subheader("Apakah data sudah cukup untuk dipakai mengambil keputusan?")
         a,b,c = st.columns(3)
         with a: card("Siswa data memadai", str(int(all_features.data_memadai.sum())),
@@ -427,27 +527,10 @@ if tabs[3].open:
                 st.info("Kode TO tidak tersedia dalam data API.")
             elif not qa.empty:
                 stats = qa.groupby(["mapel", "assessment_code"]).score.agg(
-                    Jumlah="size", Median="median", Sebaran="std").round(1).reset_index()
+                    Jumlah="size", Median="median", Sebaran="std").round(2).reset_index()
                 table(stats)
                 st.caption("Median dan sebaran merupakan sinyal memeriksa perbedaan kesulitan, bukan bukti soal buruk. Analisis butir memerlukan jawaban per nomor.")
             else:
                 st.info("Tidak ada kode TO untuk pilihan ini.")
-        with st.expander("Analisis lanjutan: simulasi ilustratif"):
-            st.warning("Simulasi belum dikalibrasi dengan hasil TKA nyata. Jangan pakai peluang persentase atau perubahan skenario untuk memberi label kesiapan maupun memutuskan kelas.")
-            if st.toggle("Jalankan simulasi", value=False):
-                if scoped.empty:
-                    st.info("Tidak ada siswa dalam cakupan yang dipilih.")
-                elif to_remaining == 0:
-                    st.info("Rencana 14 TO telah teridentifikasi. Tidak ada TO tersisa untuk skenario ini.")
-                else:
-                    future = st.slider("TO tersisa", 1, to_remaining, min(3, to_remaining))
-                    lifts = {subject: st.slider("Asumsi kenaikan " + subject, 0, 15, 0,
-                                                 key="lift_" + str(i)) for i, subject in enumerate(CORE)}
-                    @st.cache_data(ttl=180)
-                    def cached_simulation(frame, threshold, remaining, assumptions):
-                        return simulate(frame, threshold, remaining, 1000, dict(assumptions))
-                    scenario, _ = cached_simulation(data[data.student_id.isin(scoped.student_id)],
-                                                     target, future, tuple(lifts.items()))
-                    table(scenario, ["nama", "kelas", "mapel_penghambat", "proyeksi", "tren"])
-                    st.caption("1000 skenario acak per siswa; ilustrasi sensitivitas asumsi, bukan prediksi TKA tervalidasi.")
+        st.caption("Simulasi 5.000 skenario dan langkah tindak lanjut kini ada di tab Simulasi Skenario.")
         st.info("Panel sebelum-sesudah intervensi belum ditampilkan karena memerlukan log tindakan yang konsisten. Rapor siswa berisi analisis otomatis; lembar tindakan guru dan wali kelas diunduh terpisah tanpa penyimpanan.")

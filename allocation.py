@@ -28,7 +28,7 @@ def student_features(data: pd.DataFrame) -> pd.DataFrame:
             if len(recent) >= 2:
                 dispersions.append(float(np.std(recent, ddof=1)))
             subject_counts.append(len(s))
-            by_subject[subject] = round(float(np.mean(recent)), 1)
+            by_subject[subject] = round(float(np.mean(recent)), 2)
         first = student.iloc[0]
         complete = len(scores) == 3 and all(count >= 3 for count in subject_counts)
         missing_reason = ("Data kurang: " + "; ".join(
@@ -200,15 +200,15 @@ def triage(features: pd.DataFrame, target: float = 65) -> pd.DataFrame:
                                      "Lengkapi TO terlebih dahulu; jangan simpulkan kesiapan siswa.")
         elif gap > 10 or (gap > 0 and trend < -3):
             level = "Prioritas tinggi"
-            reason = f"Rata-rata {score:.1f}; selisih {gap:.1f} dari target; tren {trend:+.1f}/TO."
+            reason = f"Rata-rata {score:.2f}; selisih {gap:.2f} dari target; tren {trend:+.1f}/TO."
             action = f"Guru {row.mapel_terlemah}: periksa kesalahan TO, tentukan satu fokus, cek ulang setelah TO berikutnya."
         elif gap > 0 or trend < -2 or (np.isfinite(volatility) and volatility >= 12):
             level = "Perlu dipantau"
-            reason = f"Rata-rata {score:.1f}; tren {trend:+.1f}/TO; fluktuasi {volatility:.1f}."
+            reason = f"Rata-rata {score:.2f}; tren {trend:+.1f}/TO; fluktuasi {volatility:.1f}."
             action = f"Guru {row.mapel_terlemah}: tinjau nilai terakhir dan tetapkan satu langkah pada TO berikutnya."
         else:
             level = "Relatif siap"
-            reason = f"Rata-rata {score:.1f}; tren {trend:+.1f}/TO; fluktuasi {volatility:.1f}."
+            reason = f"Rata-rata {score:.2f}; tren {trend:+.1f}/TO; fluktuasi {volatility:.1f}."
             action = "Jaga konsistensi, jangan menambah latihan tanpa indikasi kebutuhan."
         potential = bool(row.data_memadai and 0 < gap <= 15 and trend >= 0
                          and np.isfinite(volatility) and volatility <= 12)

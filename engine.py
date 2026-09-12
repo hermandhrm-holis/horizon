@@ -91,13 +91,15 @@ def demo_data() -> pd.DataFrame:
 
 def simulate(data: pd.DataFrame, target: float, future: int, runs: int, lifts=None):
     """Illustrative Monte Carlo: not calibrated to actual TKA outcomes."""
+    if future < 1 or runs < 1:
+        raise ValueError("Jumlah TO mendatang dan percobaan harus lebih dari nol.")
     rng = np.random.default_rng(42)
     lifts = lifts or {}
     output, details = [], {}
     for sid, s in data.groupby("student_id", sort=True):
         sims, summary, trend_values, volatility_values = [], [], [], []
         for subject in CORE:
-            part = s[s.mapel == subject].sort_values("assessment_order")
+            part = s[(s.mapel == subject) & s.score.notna()].sort_values("assessment_order")
             if part.empty:
                 continue
             y = part.score.to_numpy(float)
@@ -112,22 +114,38 @@ def simulate(data: pd.DataFrame, target: float, future: int, runs: int, lifts=No
             expected = float(recent_y[-1]) + slope * np.arange(1, future + 1) + float(lifts.get(subject, 0))
             projected = np.clip(rng.normal(expected, uncertainty, size=(runs, future)).mean(axis=1), 0, 100)
             sims.append(projected); trend_values.append(slope); volatility_values.append(volatility)
-            summary.append({"Mapel": subject, "Nilai terakhir": round(float(y[-1]), 1),
-                            "Tren": round(slope, 1), "Proyeksi": round(float(np.median(projected)), 1),
+            summary.append({"Mapel": subject, "Nilai terakhir": round(float(y[-1]), 2),
+                            "Tren": round(slope, 2), "Proyeksi": round(float(np.median(projected)), 2),
                             "Jumlah TO": len(y)})
-        if not sims:
-            continue
-        combined = np.mean(np.vstack(sims), axis=0)
-        probability = float(np.mean(combined < target))
         complete = len(sims) == 3 and all(row["Jumlah TO"] >= 3 for row in summary)
+        # A partial three-subject average must never masquerade as a three-subject probability.
+        combined = np.mean(np.vstack(sims), axis=0) if complete else None
+        probability = float(np.mean(combined < target)) if complete else np.nan
         category = ("Data terbatas" if not complete else "Prioritas tinggi" if probability >= .7
                     else "Perlu dipantau" if probability >= .35 else "Relatif siap")
         first = s.iloc[0]
         output.append({"student_id": sid, "nama": first["nama"], "kelas": first["kelas"],
                        "status_tka": first["status_tka"], "peluang_belum_target": probability,
-                       "proyeksi": float(np.median(combined)), "batas_bawah": float(np.percentile(combined, 10)),
-                       "batas_atas": float(np.percentile(combined, 90)), "status": category,
-                       "tren": float(np.mean(trend_values)), "fluktuasi": float(np.mean(volatility_values)),
-                       "mapel_penghambat": min(summary, key=lambda item: item["Proyeksi"])["Mapel"]})
+                       "proyeksi": float(np.median(combined)) if complete else np.nan,
+                       "batas_bawah": float(np.percentile(combined, 10)) if complete else np.nan,
+                       "batas_atas": float(np.percentile(combined, 90)) if complete else np.nan,
+                       "status": category, "tren": float(np.mean(trend_values)) if trend_values else np.nan,
+                       "fluktuasi": float(np.mean(volatility_values)) if volatility_values else np.nan,
+                       "mapel_penghambat": min(summary, key=lambda item: item["Proyeksi"])["Mapel"] if summary else "Belum ada nilai"})
         details[sid] = {"distribution": combined, "subjects": summary}
     return pd.DataFrame(output), details
+
+
+def simulation_guidance(risk: float, subject: str) -> str:
+    """Triage suggestions from model scenarios, never treatment-effect estimates."""
+    if pd.isna(risk):
+        return "Data belum cukup (minimal 3 nilai per mapel). Guru/WK periksa kelengkapan nilai dahulu."
+    if risk >= .70:
+        return (f"Tindak lanjut segera: wali kelas koordinasi dengan guru {subject}; periksa jawaban salah, "
+                "latih satu topik prioritas, lalu periksa hasil TO berikutnya.")
+    if risk >= .50:
+        return (f"Penguatan terarah: guru {subject} pilih satu topik dari jawaban salah, "
+                "latihan singkat, lalu evaluasi pada TO berikutnya.")
+    if risk >= .35:
+        return (f"Pantau dan uji satu penguatan pada {subject}; pastikan skor bertahan pada TO berikutnya.")
+    return "Jaga rutinitas belajar; pantau kestabilan ketiga mapel pada TO berikutnya."
