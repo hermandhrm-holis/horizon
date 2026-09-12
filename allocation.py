@@ -13,7 +13,7 @@ def student_features(data: pd.DataFrame) -> pd.DataFrame:
     """Use the recent three scores per subject; missing subjects never become zero."""
     records = []
     for sid, student in data.groupby("student_id", sort=True):
-        scores, trends, coverage = [], [], 0
+        scores, trends, dispersions, coverage = [], [], [], 0
         by_subject = {}
         for subject in SUBJECTS:
             s = student[student["mapel"].str.casefold() == subject.casefold()].sort_values("assessment_order")
@@ -22,16 +22,24 @@ def student_features(data: pd.DataFrame) -> pd.DataFrame:
             recent = s["score"].tail(3).to_numpy(float)
             scores.append(float(np.mean(recent)))
             trends.append(float(recent[-1] - recent[0]) / max(len(recent) - 1, 1))
+            if len(recent) >= 2:
+                dispersions.append(float(np.std(recent, ddof=1)))
             coverage += min(len(s), 3)
             by_subject[subject] = round(float(np.mean(recent)), 1)
         first = student.iloc[0]
         complete = len(scores) == 3 and coverage >= 6
         avg = float(np.mean(scores)) if scores else np.nan
         trend = float(np.mean(trends)) if trends else 0.0
+        volatility = float(np.mean(dispersions)) if dispersions else np.nan
+        # Descriptive suitability scores, not measured treatment effects.
+        potential = (12 - min(abs(avg - 65) * 0.6, 12) + 3 * min(max(trend, 0), 5)
+                     + 0.2 * max(100 - avg, 0) - 0.3 * (volatility if np.isfinite(volatility) else 15)) if scores else np.nan
+        fu_fit = avg - 0.5 * (volatility if np.isfinite(volatility) else 15) - 1.5 * max(trend, 0) if scores else np.nan
         records.append({
             "student_id": sid, "nama": first["nama"], "kelas_asal": first["kelas"],
             "status_tka": first["status_tka"], "rata_terkini": avg,
             "tren": trend, "mapel_tersedia": len(scores), "data_memadai": complete,
+            "fluktuasi": volatility, "potensi_pengembangan": potential, "kecocokan_fu": fu_fit,
             "skor_penempatan": float(np.clip(avg + np.clip(trend, -5, 5) * 0.4, 0, 100)) if scores else np.nan,
             "mapel_terlemah": min(by_subject, key=by_subject.get) if by_subject else "—",
         })
@@ -53,19 +61,26 @@ def allocate(features: pd.DataFrame, bottom_on: int = 10, overrides: dict | None
     status = df["status_tka"].astype(str).str.casefold()
     if (~status.isin(["ikut", "tidak ikut"])).any():
         raise ValueError("Ada status TKA belum diatur; lengkapi PesertaTKA dahulu.")
-    if df["skor_penempatan"].isna().any():
-        raise ValueError("Ada siswa tanpa nilai tiga mapel utama; lengkapi data sebelum mengelompokkan.")
+    if df["skor_penempatan"].isna().any() or (~df["data_memadai"]).any():
+        raise ValueError("Ada siswa dengan data tiga mapel utama yang belum memadai; lengkapi nilai sebelum mengelompokkan.")
     if bottom_on < 0 or bottom_on > caps["On"]:
         raise ValueError("Jumlah siswa terbawah untuk On harus 0–29.")
-    participants = df[status == "ikut"].sort_values(["skor_penempatan", "student_id"], ascending=[False, True])
+    participants = df[status == "ikut"].sort_values(["kecocokan_fu", "skor_penempatan", "student_id"], ascending=[False, False, True])
     others = df[status == "tidak ikut"].sort_values(["skor_penempatan", "student_id"], ascending=[False, True])
     if len(participants) > sum(caps[g] for g in ("Fu", "Ch", "Am")):
         raise ValueError("Peserta TKA melebihi kapasitas Fu + Ch + Am (81).")
+    if len(participants) < caps["Fu"] + caps["Ch"]:
+        raise ValueError("Minimal 51 peserta TKA diperlukan jika Fu dan Ch diisi peserta TKA sepenuhnya.")
 
     assigned = {}
-    for _, row in participants.iterrows():
-        group = next(g for g in ("Fu", "Ch", "Am") if sum(v == g for v in assigned.values()) < caps[g])
-        assigned[row.student_id] = group
+    for sid in participants.head(caps["Fu"])["student_id"]:
+        assigned[sid] = "Fu"
+    remaining_tka = participants[~participants["student_id"].isin(assigned)].sort_values(
+        ["potensi_pengembangan", "skor_penempatan", "student_id"], ascending=[False, False, True])
+    for sid in remaining_tka.head(caps["Ch"])["student_id"]:
+        assigned[sid] = "Ch"
+    for sid in remaining_tka.iloc[caps["Ch"]:]["student_id"]:
+        assigned[sid] = "Am"
     remaining_am = caps["Am"] - sum(v == "Am" for v in assigned.values())
     for sid in others.head(remaining_am)["student_id"]:
         assigned[sid] = "Am"
@@ -109,7 +124,9 @@ def allocate(features: pd.DataFrame, bottom_on: int = 10, overrides: dict | None
     df["rekomendasi"] = df["student_id"].map(assigned)
     df["alasan"] = df.apply(lambda r: (
         "Penempatan manual (pertukaran aman)" if r.student_id in locked else
-        "Peserta TKA; skor terkini dan tren" if r.status_tka.casefold() == "ikut" else
+        "Fu: skor kuat dan stabil" if r.rekomendasi == "Fu" else
+        "Ch: indikator ruang berkembang" if r.rekomendasi == "Ch" else
+        "Peserta TKA; perlu penguatan stabil" if r.status_tka.casefold() == "ikut" else
         "Kelompok dasar; termasuk blok terbawah On" if r.student_id in bottom_ids else
         "Nonpeserta; skor terkini dan tren"
     ), axis=1)
