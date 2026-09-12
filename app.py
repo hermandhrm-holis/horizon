@@ -43,6 +43,17 @@ def secret_or_blank(key: str) -> str:
         return ""
 
 
+def metric_card(label: str, value: str, note: str = ""):
+    note_html = f'<div style="margin-top:8px;color:#527066;font-size:14px;font-weight:600">{note}</div>' if note else ""
+    st.markdown(
+        f'''<div style="background:#ffffff;border:1px solid #cbd8d1;border-radius:20px;
+        padding:20px 22px;min-height:122px;box-shadow:0 2px 8px rgba(32,51,46,.06)">
+        <div style="color:#45645b;font-size:15px;font-weight:750;line-height:1.3">{label}</div>
+        <div style="color:#172c26;font-size:42px;font-weight:800;line-height:1.15;margin-top:12px">{value}</div>
+        {note_html}</div>''', unsafe_allow_html=True
+    )
+
+
 def normalize(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     df.columns = [str(c).strip().lower() for c in df.columns]
@@ -125,7 +136,7 @@ st.markdown("""
 .hero {background:linear-gradient(110deg,#365f54,#91b4a7);padding:30px 34px;border-radius:28px;color:white;margin-bottom:18px}
 .hero h1 {margin:0;font-size:2.35rem}.hero p{margin:.45rem 0 0;opacity:.9}
 [data-testid="stMetric"] {background:#fff;border:1px solid #d9e3dd;padding:14px;border-radius:18px}
-div[data-testid="stMetricLabel"] *, div[data-testid="stMetricValue"] * {color:#20332e!important;opacity:1!important}
+div[data-testid="stMetricLabel"],div[data-testid="stMetricLabel"] *,div[data-testid="stMetricValue"],div[data-testid="stMetricValue"] *{color:#20332e!important;opacity:1!important}
 </style>
 <div class="hero"><div style="letter-spacing:.18em;font-weight:700">HORIZON TKA</div>
 <h1>Risk & Scenario Lab</h1><p>Simulasi probabilistik untuk keputusan intervensi—bukan vonis kelulusan.</p></div>
@@ -193,10 +204,10 @@ try:
     baseline_ready = float((1-baseline_risk.peluang_belum_target).sum())
     scenario_ready = float((1-risk.peluang_belum_target).sum())
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Siswa dianalisis", len(risk))
-    c2.metric("Prioritas tinggi", int((risk.status == "Prioritas tinggi").sum()))
-    c3.metric("Perlu dipantau", int((risk.status == "Perlu dipantau").sum()))
-    c4.metric("Perkiraan mencapai target", f"{scenario_ready:.1f}", delta=f"{scenario_ready-baseline_ready:+.1f} dari skenario")
+    with c1: metric_card("Siswa dianalisis", str(len(risk)))
+    with c2: metric_card("Prioritas tinggi", str(int((risk.status == "Prioritas tinggi").sum())))
+    with c3: metric_card("Perlu dipantau", str(int((risk.status == "Perlu dipantau").sum())))
+    with c4: metric_card("Perkiraan mencapai target", f"{scenario_ready:.1f}", f"{scenario_ready-baseline_ready:+.1f} dari skenario")
 
     left, right = st.columns([1.25, 1])
     with left:
@@ -213,10 +224,11 @@ try:
                          color_discrete_map={"Prioritas tinggi":"#d96c5f","Perlu dipantau":"#e4ad4d","Relatif siap":"#5d9380"},
                          labels={"nilai_terakhir":"Nilai terakhir", "peluang_belum_target":"Peluang belum target"})
         fig.add_vline(x=target, line_dash="dot", line_color="#456f63")
-        fig.update_yaxes(tickformat=".0%", range=[0,1])
-        fig.update_layout(height=430, legend_title_text="", margin=dict(l=10,r=10,t=10,b=10),
-                          paper_bgcolor="#ffffff", plot_bgcolor="#ffffff", font_color="#20332e")
-        st.plotly_chart(fig, width="stretch")
+        fig.update_xaxes(tickfont=dict(color="#20332e",size=13),title_font=dict(color="#20332e",size=15),gridcolor="#d7e0dc",linecolor="#82958e")
+        fig.update_yaxes(tickformat=".0%",range=[0,1],tickfont=dict(color="#20332e",size=13),title_font=dict(color="#20332e",size=15),gridcolor="#d7e0dc",linecolor="#82958e")
+        fig.update_layout(height=430,legend_title_text="",margin=dict(l=10,r=10,t=10,b=10),paper_bgcolor="#ffffff",plot_bgcolor="#ffffff",
+                          font=dict(color="#20332e",size=13),legend=dict(font=dict(color="#20332e",size=13),bgcolor="rgba(255,255,255,.9)"))
+        st.plotly_chart(fig, theme=None, width="stretch")
 
     st.subheader("Mengapa siswa masuk prioritas?")
     selected_name = st.selectbox("Pilih siswa", risk["nama"].tolist())
@@ -233,8 +245,10 @@ try:
         hist = px.histogram(x=sim, nbins=28, labels={"x":"Proyeksi rata-rata akhir", "count":"Skenario"},
                             color_discrete_sequence=["#6f988b"])
         hist.add_vline(x=target, line_dash="dash", line_color="#d96c5f", annotation_text="Target")
-        hist.update_layout(height=330, margin=dict(l=10,r=10,t=20,b=10), showlegend=False)
-        st.plotly_chart(hist, width="stretch")
+        hist.update_xaxes(tickfont=dict(color="#20332e"),title_font=dict(color="#20332e"),gridcolor="#d7e0dc")
+        hist.update_yaxes(tickfont=dict(color="#20332e"),title_font=dict(color="#20332e"),gridcolor="#d7e0dc")
+        hist.update_layout(height=330,margin=dict(l=10,r=10,t=20,b=10),showlegend=False,paper_bgcolor="#ffffff",plot_bgcolor="#ffffff",font=dict(color="#20332e"))
+        st.plotly_chart(hist, theme=None, width="stretch")
 
     st.warning("Model ini adalah alat triase. Keputusan intervensi tetap harus mempertimbangkan konteks guru, kualitas soal, kondisi siswa, dan kelengkapan data.")
 
