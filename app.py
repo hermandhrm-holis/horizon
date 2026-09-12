@@ -1,6 +1,7 @@
 """HORIZON: read-only, tabbed statistical decision dashboards."""
 
 import math
+import re
 
 import numpy as np
 import pandas as pd
@@ -9,6 +10,7 @@ import streamlit as st
 
 from allocation import allocate, attention_count, ranking, select_assessments, student_features
 from engine import CORE, SourceError, demo_data, fetch_gas, normalize, simulate
+from report import build_report, student_analysis
 
 st.set_page_config(page_title="HORIZON TKA • Decision Lab", page_icon="🔭", layout="wide")
 
@@ -58,7 +60,7 @@ def chart_style(fig, height=360):
     st.plotly_chart(fig, theme=None, width="stretch")
 
 
-def profile(data, sid, label="Profil siswa"):
+def profile(data, sid, label="Profil siswa", target_value=65):
     student = data[data.student_id == sid].sort_values(["mapel", "assessment_order"])
     if student.empty:
         return
@@ -71,6 +73,10 @@ def profile(data, sid, label="Profil siswa"):
                  f"fluktuasi {item['fluktuasi']:.1f} · penghambat: {item['mapel_terlemah']}.")
         if not item.data_memadai:
             st.warning("Jumlah nilai belum cukup untuk menilai kestabilan dengan yakin.")
+    commentary = student_analysis(student, target_value)
+    st.write("**Perhatian utama:** " + commentary["weakness"])
+    st.write("**Ruang peningkatan:** " + commentary["growth"])
+    st.caption(commentary["caution"])
     fig = px.line(student, x="assessment_order", y="score", color="mapel", markers=True,
                   hover_data=["assessment_code"] if "assessment_code" in student else None,
                   labels={"assessment_order":"Urutan TO", "score":"Nilai", "mapel":"Mapel"})
@@ -85,7 +91,7 @@ def selected_profile(frame, data, key):
     selected = selection.selection.rows if selection else []
     sid = frame.iloc[selected[0]].student_id if selected else frame.iloc[0].student_id
     st.caption("Klik satu baris siswa untuk membuka profilnya. Baris pertama terbuka sebagai contoh.")
-    profile(data, sid)
+    profile(data, sid, target_value=target)
 
 
 def scope_filter(df, population, school_class):
@@ -162,7 +168,8 @@ eligible_ids = set(risk.student_id)
 visible_data = cohort[cohort.student_id.isin(eligible_ids)]
 
 labels = ["Ringkasan", "Prioritas 5/10", "Perhatian %", "Potensi Naik", "Peringatan Dini",
-          "Simulasi", "Mapel", "Stabilitas", "Kelas", "Kualitas TO", "Ranking & Profil", "Fu–On", "Intervensi"]
+          "Simulasi", "Mapel", "Stabilitas", "Kelas", "Kualitas TO", "Ranking & Profil",
+          "Rapor & Perhatian", "Fu–On", "Intervensi"]
 tabs = st.tabs(labels, key="dashboard_tab", on_change="rerun")
 
 if tabs[0].open:
@@ -300,6 +307,51 @@ if tabs[10].open:
 
 if tabs[11].open:
     with tabs[11]:
+        st.subheader("Rapor analisis siswa dan perhatian guru")
+        st.caption("Pilih siswa dari cakupan peserta/kelas di sidebar. Kalimat otomatis dihitung ulang dari nilai; isian guru dan wali kelas hanya ada di sesi ini dan PDF yang diunduh.")
+        options = cohort[["student_id", "nama", "kelas"]].drop_duplicates("student_id").sort_values(["nama", "student_id"])
+        names = options.set_index("student_id")
+        sid = st.selectbox("Pilih siswa", options.student_id.tolist(),
+                           format_func=lambda key: f"{names.loc[key, 'nama']} ({names.loc[key, 'kelas']})",
+                           key="report_student")
+        individual = data[data.student_id == sid]
+        analysis = student_analysis(individual, target)
+        ranks = ranking(data, 3)
+        rank_row = ranks[ranks.student_id == sid] if not ranks.empty else pd.DataFrame()
+        if not rank_row.empty:
+            st.write(f"**Peringkat {int(rank_row.iloc[0].peringkat)} dari {len(ranks)} siswa** (3 TO terakhir, tiga mapel utama, seluruh sekolah).")
+        else:
+            st.warning("Peringkat tidak tersedia karena data tiga mapel belum lengkap.")
+        profile(individual, sid, "Analisis otomatis", target_value=target)
+        st.write("**Kesimpulan per mapel**")
+        for subject in analysis["subjects"]:
+            st.write(f"**{subject['mapel']}:** {subject['interpretasi']}")
+        st.divider()
+        st.subheader("Form perhatian - diisi sebelum mengunduh")
+        st.info("Catatan tidak disimpan permanen ke Google Sheet atau basis data. Catatan dapat bertahan sementara selama sesi aktif; setelah sesi berakhir, catatan yang belum diunduh tidak bisa dibuka kembali.")
+        notes = {}
+        for i, subject in enumerate(analysis["subjects"]):
+            with st.expander("Guru " + subject["mapel"], expanded=i == 0):
+                focus = st.text_input("Fokus materi/temuan guru", key=f"focus_{sid}_{i}", max_chars=140,
+                                      placeholder="Contoh: kesalahan pada soal penalaran")
+                action = st.text_area("Tindakan pembelajaran", key=f"action_{sid}_{i}", max_chars=220,
+                                      placeholder="Contoh: telaah 5 soal yang salah dan diskusi dengan guru")
+                goal = st.text_input("Indikator pada TO berikutnya", key=f"goal_{sid}_{i}", max_chars=120,
+                                     placeholder="Contoh: skor atau jenis soal yang perlu ditinjau")
+                notes[subject["mapel"]] = {"fokus": focus, "tindakan": action, "target": goal}
+        homeroom_note = st.text_area("Catatan wali kelas / koordinasi guru", key=f"homeroom_{sid}",
+                                     max_chars=350, placeholder="Siapa yang akan menindaklanjuti dan kapan dicek kembali?")
+        next_review = st.text_input("Waktu pemeriksaan berikutnya", key=f"review_{sid}", max_chars=90,
+                                     placeholder="Contoh: setelah TO berikutnya")
+        pdf = build_report(analysis, notes, homeroom_note, next_review,
+                           scope=f"Seluruh sekolah, {len(ranks)} siswa dengan tiga mapel", demo=demo_mode)
+        filename = "rapor_horizon_" + re.sub(r"[^a-zA-Z0-9_-]", "_", sid) + ".pdf"
+        st.download_button("Unduh rapor dan rencana perhatian (PDF)", pdf, file_name=filename,
+                           mime="application/pdf", key=f"pdf_{sid}")
+        st.caption("PDF adalah salinan saat diunduh. Jika data atau catatan berubah, unduh ulang versi terbaru.")
+
+if tabs[12].open:
+    with tabs[12]:
         st.subheader("Rekomendasi Fu–Ch–Am–Pi–On")
         st.caption("Penempatan memakai seluruh angkatan, tidak dibatasi filter kelas/status di sidebar. Fu: prestasi kuat dan stabil. Ch: indikator ruang berkembang. Am: jaga dan kuatkan. Pi/On: campuran, siswa terbawah di On.")
         features=student_features(data)
@@ -338,8 +390,8 @@ if tabs[11].open:
                 st.warning("Peringkat dan kecocokan kelompok adalah dua ukuran berbeda. Skor kecocokan merupakan aturan transparan berbasis nilai, tren, dan fluktuasi—belum bukti bahwa siswa akan meningkat jika dipindahkan ke Ch.")
             except ValueError as exc: st.error("Belum dapat membagi kelas: "+str(exc))
 
-if tabs[12].open:
-    with tabs[12]:
+if tabs[13].open:
+    with tabs[13]:
         st.subheader("Pantau intervensi sebelum–sesudah")
         st.caption("Unggah catatan tindakan agar tab ini dapat merangkum perubahan nilai. Ini hubungan deskriptif, bukan bukti sebab-akibat.")
         interventions=st.file_uploader("CSV: student_id,intervensi,assessment_order_awal",type="csv",key="interventions")
