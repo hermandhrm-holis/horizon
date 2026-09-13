@@ -11,7 +11,7 @@ from allocation import (allocate, assessment_chart_data, attention_count, rankin
                         student_features, triage)
 from briefing import homeroom_brief, remaining_to, role_pdf, subject_brief
 from engine import CORE, SourceError, fetch_gas, simulate, simulation_guidance
-from report import build_report, student_analysis
+from report import build_report, student_analysis, student_chart_data, SUBJECT_COLORS
 
 
 # The endpoint is not a credential; the data access token belongs in Streamlit Secrets.
@@ -379,10 +379,24 @@ if tabs[1].open:
                                      "Rata 3 terakhir": subject["mean"], "Arah per TO": subject["trend"],
                                      "Catatan": subject["interpretasi"]})
             table(pd.DataFrame(subject_rows))
-            line = px.line(selected_data.sort_values("assessment_order"), x="assessment_order", y="score",
-                           color="mapel", markers=True,
+            chart_data = student_chart_data(selected_data)
+            line = px.line(chart_data, x="assessment_order", y="score",
+                           color="mapel", markers=True, color_discrete_map=SUBJECT_COLORS,
+                           hover_data=["assessment_code"],
                            labels={"assessment_order":"Urutan TO per mapel", "score":"Nilai", "mapel":"Mapel"})
+            line.update_traces(connectgaps=False)
+            line.update_xaxes(dtick=1)
+            line.update_yaxes(range=[0, 105])
             plot(line)
+            st.caption("Urutan TO per mapel mengikuti sumber; bukan otomatis nomor TO PENABUR/HOLIS. "
+                       "Nilai yang tidak tersedia dibiarkan kosong, bukan dianggap nol.")
+            with st.expander("Periksa data grafik dan nilai yang kosong"):
+                audit = chart_data.rename(columns={"mapel":"Mapel", "assessment_order":"Urutan TO",
+                    "assessment_code":"Kode TO sumber", "score":"Nilai"}).copy()
+                audit["Status"] = audit.Nilai.apply(lambda value: "Tidak tersedia dalam data yang diterima" if pd.isna(value) else "Ada nilai")
+                table(audit)
+                st.caption("Jika nilai tercatat di Google Sheet tetapi tidak tampil di sini, periksa kode TO, "
+                           "format angka, dan respons API untuk ID siswa ini. Tabel ini tidak memastikan penyebab nilai kosong.")
             pdf = build_report(analysis, scope=f"Seluruh sekolah, {len(global_rank)} siswa dengan tiga mapel")
             filename = "rapor_horizon_" + re.sub(r"[^a-zA-Z0-9_-]", "_", selected) + ".pdf"
             st.download_button("Unduh rapor siswa (PDF)", pdf, file_name=filename,

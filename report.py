@@ -1,4 +1,4 @@
-"""Deterministic student commentary and an on-demand, one-page PDF report.
+"""Deterministic student commentary and an on-demand PDF report.
 
 Only anonymized test data is bundled; no student values or teacher notes persist.
 """
@@ -17,9 +17,67 @@ from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.lib.units import mm
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
-from reportlab.platypus import KeepTogether, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from reportlab.graphics.shapes import Drawing, Line, Circle, String
+from reportlab.platypus import PageBreak, KeepTogether, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 from allocation import SUBJECTS
+
+
+SUBJECT_COLORS = {"Matematika": "#6366f1", "Bahasa Indonesia": "#f15b41", "Bahasa Inggris": "#10b981"}
+
+
+def student_chart_data(student):
+    """Retain source order and missing values; never renumber an absent test."""
+    source = student.copy()
+    source["assessment_order"] = pd.to_numeric(source.assessment_order, errors="coerce")
+    valid = source[source.assessment_order.notna() & source.assessment_order.ge(1)]
+    if valid.empty:
+        return pd.DataFrame(columns=["mapel", "assessment_order", "score", "assessment_code"])
+    orders = sorted(set(valid.assessment_order))
+    if all(float(x).is_integer() for x in orders) and max(orders) <= 200:
+        orders = list(range(1, int(max(orders)) + 1))
+    result = []
+    for subject in SUBJECTS:
+        part = valid[valid.mapel == subject].copy()
+        if "assessment_code" not in part:
+            part["assessment_code"] = ""
+        grid = pd.DataFrame({"assessment_order": orders})
+        grid = grid.merge(part[["assessment_order", "score", "assessment_code"]], how="left", on="assessment_order")
+        grid["mapel"] = subject
+        result.append(grid)
+    return pd.concat(result, ignore_index=True)
+
+
+def report_chart(records, font):
+    """Vector chart using the same points and gaps as the dashboard."""
+    drawing = Drawing(475, 240)
+    left, bottom, width, height = 36, 42, 425, 170
+    maximum = max((r["assessment_order"] for r in records), default=1)
+    x = lambda order: left + (order-1) / max(1, maximum-1) * width
+    y = lambda score: bottom + score / 100 * height
+    for score in range(0,101,20):
+        drawing.add(Line(left,y(score),left+width,y(score),strokeColor=colors.HexColor("#e1e8e4")))
+        drawing.add(String(left-8,y(score)-3,str(score),fontName=font,fontSize=8,textAnchor="end"))
+    orders = sorted({r["assessment_order"] for r in records})
+    for order in orders:
+        if len(orders) <= 16 or order in (orders[0],orders[-1]) or int(order) % 5 == 0:
+            drawing.add(String(x(order),bottom-15,f"{order:g}",fontName=font,fontSize=8,textAnchor="middle"))
+    drawing.add(String(245,7,"Urutan TO per mapel dari sumber",fontName=font,fontSize=8,textAnchor="middle"))
+    for j, subject in enumerate(SUBJECTS):
+        color = colors.HexColor(SUBJECT_COLORS[subject])
+        drawing.add(Circle(43+j*150,230,3,fillColor=color,strokeColor=color))
+        drawing.add(String(50+j*150,227,subject,fontName=font,fontSize=8))
+        previous = None
+        for r in (r for r in records if r["mapel"] == subject):
+            if r["score"] is None:
+                previous = None
+                continue
+            point = (x(r["assessment_order"]),y(r["score"]))
+            if previous:
+                drawing.add(Line(*previous,*point,strokeColor=color,strokeWidth=1.6))
+            drawing.add(Circle(*point,2.5,fillColor=color,strokeColor=color))
+            previous = point
+    return drawing
 
 
 def student_analysis(student: pd.DataFrame, target: float = 65) -> dict:
@@ -89,11 +147,13 @@ def student_analysis(student: pd.DataFrame, target: float = 65) -> dict:
     unstable = [s["mapel"] for s in reliable if s["volatility"] > 12]
     caution = ("Nilai berfluktuasi pada " + ", ".join(unstable) + "; cek konsistensi dan kesulitan tes."
                if unstable else "Tidak ada lonjakan fluktuasi besar pada mapel dengan data memadai.")
+    chart = student_chart_data(student)
     return {"student_id": str(first.student_id), "nama": str(first.nama),
             "kelas": str(first.kelas), "status_tka": str(first.status_tka),
             "target": float(target), "subjects": subjects, "weakness": weakness,
             "growth": growth, "caution": caution,
-            "complete": len(reliable) == len(SUBJECTS)}
+            "complete": len(reliable) == len(SUBJECTS),
+            "chart": chart.astype(object).where(pd.notna(chart), None).to_dict("records")}
 
 
 def _font_names():
@@ -109,7 +169,7 @@ def _font_names():
 
 def build_report(analysis: dict, printed_on: date | None = None,
                  scope: str = "Semua siswa", demo: bool = False) -> bytes:
-    """Return a one-page student analysis PDF without teacher input fields."""
+    """Return a student analysis PDF without teacher input fields."""
     printed_on = printed_on or date.today()
     buffer = BytesIO()
     regular, bold = _font_names()
@@ -176,5 +236,28 @@ def build_report(analysis: dict, printed_on: date | None = None,
                     "PENABUR dan HOLIS tidak dikoreksi. Sebelum menentukan topik latihan, "
                     "guru perlu meninjau jawaban per butir.", "SmallLab"),
                   p(f"Cakupan ranking/dashboard: {scope}. Tanggal cetak: {printed_on:%d-%m-%Y}.", "SmallLab")])
+    records = analysis.get("chart", [])
+    if records:
+        story.extend([PageBreak(), p(analysis["nama"], "H1Lab"),
+                      p(f"Kelas {analysis['kelas']} | ID: {analysis['student_id']}", "SmallLab"),
+                      p("Grafik perkembangan nilai TO", "H2Lab"), report_chart(records, regular),
+                      p("Nomor mengikuti urutan TO per mapel dari sumber, bukan otomatis nomor TO PENABUR/HOLIS. "
+                        "Titik kosong berarti nilai tidak tersedia dalam data yang diterima; bukan nilai nol. "
+                        "Garis tidak disambungkan melewati nilai yang kosong.", "SmallLab")])
+        chart_rows = [[p(v, "CellBoldLab") for v in ["Urutan", "Matematika", "B. Indonesia", "B. Inggris"]]]
+        for order in sorted({r["assessment_order"] for r in records}):
+            cells = [p(f"{order:g}", "CellLab")]
+            for subject in SUBJECTS:
+                values = [r for r in records if r["assessment_order"] == order and r["mapel"] == subject]
+                labels = [f"{r['score']:.2f}" + (f" ({r['assessment_code']})" if r.get('assessment_code') else "")
+                          for r in values if r["score"] is not None]
+                cells.append(p(" / ".join(labels) or "Tidak tersedia", "CellLab"))
+            chart_rows.append(cells)
+        chart_table = Table(chart_rows, colWidths=[20*mm,49*mm,49*mm,49*mm], repeatRows=1)
+        chart_table.setStyle(TableStyle([("BACKGROUND",(0,0),(-1,0),sage),
+            ("VALIGN",(0,0),(-1,-1),"TOP"), ("TOPPADDING",(0,0),(-1,-1),6),
+            ("BOTTOMPADDING",(0,0),(-1,-1),6),
+            ("ROWBACKGROUNDS",(0,1),(-1,-1),[colors.white,colors.HexColor("#f7faf8")])]))
+        story.append(chart_table)
     doc.build(story, onFirstPage=frame, onLaterPages=frame)
     return buffer.getvalue()
