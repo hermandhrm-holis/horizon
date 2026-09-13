@@ -34,6 +34,67 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
+PERSISTENT_KEYS = {
+    'chart_provider',
+    'daily_audience',
+    'filter_daftar_tindakan',
+    'filter_jendela_ranking',
+    'filter_kelas_asal',
+    'filter_lihat_kelompok',
+    'filter_minimum_siswa_terbawah_di_on_termasuk_data_kurang',
+    'filter_persentase_dari_cakupan_ini',
+    'filter_siswa',
+    'filter_sumber_to',
+    'filter_tampilkan',
+    'filter_target_nilai',
+    'filter_token_api',
+    'filter_top_per_kelas',
+    'filter_url_web_app_gas',
+    'placement_editor',
+    'quality_provider',
+    'report_student',
+    'run_scenario',
+    'simulation_future',
+    'simulation_provider',
+    'teacher_class',
+    'teacher_subject',
+    'wk_class',
+}
+
+# Keep filter and editor state while their lazy tab is hidden.
+for _state_key in list(st.session_state):
+    if _state_key in PERSISTENT_KEYS or _state_key.startswith(("size_", "scenario_lift_", "form_")):
+        st.session_state[_state_key] = st.session_state[_state_key]
+
+
+def open_student(click_key, student_ids):
+    click = st.session_state.get(click_key)
+    if click is None:
+        return
+    row = click["row"]
+    if not isinstance(row, int) or not 0 <= row < len(student_ids):
+        return
+    current_tab = st.session_state.get("decision_tab", "Tindakan Hari Ini")
+    if current_tab != "Siswa & Rapor" or not st.session_state.get("report_focus"):
+        st.session_state["report_return_tab"] = current_tab
+    st.session_state["report_student"] = student_ids[row]
+    st.session_state["report_focus"] = True
+    st.session_state["decision_tab"] = "Siswa & Rapor"
+
+
+def return_to_list():
+    st.session_state["decision_tab"] = st.session_state.pop("report_return_tab", "Tindakan Hari Ini")
+    st.session_state["report_focus"] = False
+
+
+def student_name_column(frame, key):
+    # Capture the exact displayed row order, including tables with hidden IDs.
+    return st.column_config.ButtonColumn(
+        "Nama siswa ↗", width="large", pinned=True, alignment="left", type="tertiary",
+        help="Klik nama untuk membuka rapor siswa.", key=key,
+        on_click=open_student, args=(key, tuple(frame.student_id.tolist())))
+
+
 def card(label, value, note=""):
     st.markdown(f'<div class="card"><div class="card-label">{label}</div>'
                 f'<div class="card-value">{value}</div><div class="card-note">{note}</div></div>',
@@ -83,8 +144,11 @@ def table(frame, cols=None, key=None, height=430):
                 "Rata 3 terakhir", "Proyeksi", "Rentang 10–90%"}
     display_format = {col: st.column_config.NumberColumn(col, format="%.2f")
                       for col in shown.columns if col in averages and pd.api.types.is_numeric_dtype(shown[col])}
+    if "nama" in shown and "student_id" in frame:
+        key = key or "students_" + "_".join(shown.columns)
+        display_format["nama"] = student_name_column(frame, key + "_name_click")
     return st.dataframe(shown, hide_index=True, width="stretch", height=min(height, 45+36*(len(shown)+1)),
-                        column_config=display_format, key=key, on_select="rerun" if key else "ignore",
+                        column_config=display_format, key=key, on_select="ignore",
                         selection_mode="single-row" if key else "multi-row")
 
 
@@ -112,13 +176,13 @@ def load_data(url, token):
 
 with st.sidebar:
     st.header("Cakupan")
-    population = st.selectbox("Siswa", ["Peserta TKA", "Semua Siswa", "Tidak Ikut"])
+    population = st.selectbox("Siswa", ["Peserta TKA", "Semua Siswa", "Tidak Ikut"], key='filter_siswa')
     with st.expander("Pengaturan analisis"):
-        target = st.number_input("Target nilai", 0., 100., 65., 1.)
+        target = st.number_input("Target nilai", 0., 100., 65., 1., key='filter_target_nilai')
     stored_token = secret("GAS_API_TOKEN")
     with st.expander("Ubah koneksi API bila diperlukan", expanded=not bool(stored_token)):
-        api_url = st.text_input("URL Web App GAS", value=secret("HORIZON_API_URL_OVERRIDE") or GAS_API_URL)
-        token = st.text_input("Token API", value=stored_token, type="password")
+        api_url = st.text_input("URL Web App GAS", value=secret("HORIZON_API_URL_OVERRIDE") or GAS_API_URL, key='filter_url_web_app_gas')
+        token = st.text_input("Token API", value=stored_token, type="password", key='filter_token_api')
         st.caption("Alamat/token dalam kotak ini hanya berlaku pada sesi aktif. Untuk mengubahnya permanen, gunakan pengaturan Secrets aplikasi Streamlit.")
     st.caption("Sumber selalu API Google Apps Script (hanya baca).")
     if st.button("Muat ulang nilai dari GAS"):
@@ -145,7 +209,7 @@ rank_map = (global_rank.set_index("student_id").peringkat.to_dict() if not globa
 all_features["Peringkat sekolah (3 TO)"] = all_features.student_id.map(rank_map)
 class_options = ["Semua kelas"] + sorted(data.kelas.astype(str).unique().tolist())
 with st.sidebar:
-    school_class = st.selectbox("Kelas asal", class_options)
+    school_class = st.selectbox("Kelas asal", class_options, key='filter_kelas_asal')
     st.caption(f"{data.student_id.nunique()} siswa tercatat di sumber HORIZON.")
     st.metric("Perkiraan sisa TO", to_remaining, help=f"Rencana 14 putaran; {to_completed} putaran teridentifikasi dari Matematika/Bahasa Indonesia. Bahasa Inggris tidak digunakan untuk hitungan ini.")
 
@@ -175,9 +239,9 @@ if tabs[0].open:
             with e: card("TO tersisa", str(to_remaining), "dari rencana 14")
             p1, p2, p3 = st.columns([1.2, 1, 1])
             mode = p1.selectbox("Daftar tindakan", ["Semua perhatian", "Prioritas tinggi", "Perlu dipantau",
-                                                  "Relatif siap", "Potensi naik", "Peringatan dini", "Data terbatas"])
-            top_n = p2.selectbox("Tampilkan", [5, 10])
-            per_class = p3.toggle("Top per kelas", value=False)
+                                                  "Relatif siap", "Potensi naik", "Peringatan dini", "Data terbatas"], key='filter_daftar_tindakan')
+            top_n = p2.selectbox("Tampilkan", [5, 10], key='filter_tampilkan')
+            per_class = p3.toggle("Top per kelas", value=False, key='filter_top_per_kelas')
             candidates = scoped.copy()
             if mode == "Semua perhatian":
                 candidates = candidates[candidates.status.isin(["Prioritas tinggi", "Perlu dipantau", "Data terbatas"])]
@@ -197,15 +261,10 @@ if tabs[0].open:
                      if per_class and school_class == "Semua kelas" else candidates.head(top_n))
             cols = ["student_id", "nama", "kelas_asal", "status_tka", "status", "Peringkat sekolah (3 TO)",
                     "rata_terkini", "mapel_terlemah", "alasan_utama", "langkah_berikutnya"]
-            st.write(f"**{len(shown)} siswa** pada daftar ini. Klik baris untuk penjelasan lebih rinci.")
-            event = table(shown, cols, key="daily_student")
-            if event is not None and len(event.selection.rows):
-                selected_id = shown.reset_index(drop=True).iloc[event.selection.rows[0]].student_id
-                analysis = student_analysis(data[data.student_id == selected_id], target)
-                st.write("**Perhatian utama:** " + analysis["weakness"])
-                st.write("**Ruang peningkatan:** " + analysis["growth"])
+            st.write(f"**{len(shown)} siswa** pada daftar ini. Klik nama untuk membuka rapor siswa.")
+            table(shown, cols, key="daily_student")
             with st.expander("Kuota perhatian berdasarkan persentase"):
-                percentage = st.number_input("Persentase dari cakupan ini", 1, 100, 25)
+                percentage = st.number_input("Persentase dari cakupan ini", 1, 100, 25, key='filter_persentase_dari_cakupan_ini')
                 number = attention_count(len(scoped), int(percentage))
                 pool = scoped.sort_values(["urutan_perhatian", "student_id"], ascending=[False, True]).head(number)
                 st.write(f"{percentage}% dari {len(scoped)} siswa = **{number} siswa** (dibulatkan ke atas).")
@@ -254,7 +313,7 @@ if tabs[0].open:
                     edit = visible[columns].copy()
                     edit["Keputusan guru/WK"] = ""
                     edited = st.data_editor(edit, hide_index=True, width="stretch", height=380,
-                                            disabled=columns, key=f"form_{audience}_{subject}_{role_class}_{population}")
+                                            disabled=columns, column_config={"nama": student_name_column(edit, "action_form_name_click")}, key=f"form_{audience}_{subject}_{role_class}_{population}")
                     actions = dict(zip(edited.student_id, edited["Keputusan guru/WK"].fillna("")))
                     label = (f"{role} {role_class}" if subject is None else
                              f"Guru {subject} - {role_class}")
@@ -266,29 +325,43 @@ if tabs[0].open:
 if tabs[1].open:
     with tabs[1]:
         st.subheader("Ranking, profil, dan rapor siswa")
-        a,b = st.columns(2)
-        provider = a.selectbox("Sumber TO", ["Gabungan", "PENABUR", "HOLIS"])
-        window = b.selectbox("Jendela ranking", ["3 TO terakhir", "5 TO terakhir", "Semua TO"])
-        limit = {"3 TO terakhir": 3, "5 TO terakhir": 5, "Semua TO": None}[window]
-        cohort_ids = set(scoped.student_id)
-        cohort_data = data[data.student_id.isin(cohort_ids)]
-        to_data = select_assessments(cohort_data, provider)
-        ranked = ranking(to_data, limit)
-        if provider != "Gabungan" and "assessment_code" not in data:
-            st.warning("Kode TO tidak tersedia: ranking menurut penyelenggara belum dapat dihitung.")
-        if not ranked.empty:
-            st.caption(f"Peringkat di bawah dihitung ulang untuk {len(ranked)} siswa dengan ketiga mapel di cakupan ini. MT/BI/BIG = PENABUR; MTH/BIH/BIGH = HOLIS.")
-            table(ranked, ["peringkat", "nama", "kelas", "status_tka", "skor", "tren", "fluktuasi", "profil", "mapel_terlemah"])
-        else:
-            st.info("Belum ada tiga mapel lengkap untuk ranking pada pilihan ini.")
-        if not cohort_ids:
+        focused = st.session_state.get("report_focus", False)
+        if focused:
+            st.button("← Kembali ke daftar sebelumnya", on_click=return_to_list)
+        ranking_area = st.expander("Lihat daftar peringkat", expanded=not focused)
+        with ranking_area:
+            a,b = st.columns(2)
+            provider = a.selectbox("Sumber TO", ["Gabungan", "PENABUR", "HOLIS"], key='filter_sumber_to')
+            window = b.selectbox("Jendela ranking", ["3 TO terakhir", "5 TO terakhir", "Semua TO"], key='filter_jendela_ranking')
+            limit = {"3 TO terakhir": 3, "5 TO terakhir": 5, "Semua TO": None}[window]
+            cohort_ids = set(scoped.student_id)
+            cohort_data = data[data.student_id.isin(cohort_ids)]
+            to_data = select_assessments(cohort_data, provider)
+            ranked = ranking(to_data, limit)
+            if provider != "Gabungan" and "assessment_code" not in data:
+                st.warning("Kode TO tidak tersedia: ranking menurut penyelenggara belum dapat dihitung.")
+            if not ranked.empty:
+                st.caption(f"Peringkat di bawah dihitung ulang untuk {len(ranked)} siswa dengan ketiga mapel di cakupan ini. MT/BI/BIG = PENABUR; MTH/BIH/BIGH = HOLIS.")
+                table(ranked, ["peringkat", "nama", "kelas", "status_tka", "skor", "tren", "fluktuasi", "profil", "mapel_terlemah"])
+            else:
+                st.info("Belum ada tiga mapel lengkap untuk ranking pada pilihan ini.")
+        report_ids = set(scoped.student_id)
+        requested_id = st.session_state.get("report_student")
+        if requested_id in set(all_features.student_id):
+            report_ids.add(requested_id)
+        if not report_ids:
             st.info("Tidak ada siswa pada cakupan peserta/kelas yang dipilih.")
         else:
-            directory = (scoped[["student_id", "nama", "kelas_asal"]]
+            directory = (all_features[all_features.student_id.isin(report_ids)][["student_id", "nama", "kelas_asal"]]
                          .drop_duplicates("student_id").sort_values(["nama", "student_id"]).set_index("student_id"))
+            if requested_id not in directory.index:
+                st.session_state.pop("report_student", None)
+            if requested_id in report_ids and requested_id not in set(scoped.student_id):
+                st.caption("Siswa yang dibuka berada di luar filter daftar. Filter sebelumnya tetap dipertahankan.")
             selected = st.selectbox("Pilih siswa untuk analisis dan rapor", directory.index.tolist(),
                                     format_func=lambda sid: f"{directory.loc[sid, 'nama']} ({directory.loc[sid, 'kelas_asal']})",
                                     key="report_student")
+            st.subheader(f"{directory.loc[selected, 'nama']} · {directory.loc[selected, 'kelas_asal']}")
             selected_data = data[data.student_id == selected]
             analysis = student_analysis(selected_data, target)
             school_position = rank_map.get(selected)
@@ -352,7 +425,7 @@ if tabs[2].open:
         if len(all_features) != 140 or not all_features.status_tka.str.casefold().isin(["ikut", "tidak ikut"]).all():
             st.warning("Usulan kelas ditahan sampai 140 siswa dan status peserta TKA seluruh siswa lengkap.")
         else:
-            bottom = st.slider("Minimum siswa terbawah di On (termasuk data kurang)", 0, 29, 10)
+            bottom = st.slider("Minimum siswa terbawah di On (termasuk data kurang)", 0, 29, 10, key='filter_minimum_siswa_terbawah_di_on_termasuk_data_kurang')
             try:
                 features = student_features(data)
                 original = allocate(features, bottom)
@@ -382,7 +455,7 @@ if tabs[2].open:
                 st.caption("Kolom Total siswa = penghuni kelas. Fu dan Ch wajib seluruhnya ikut TKA; "
                            "kolom Ikut TKA adalah bagian dari total tersebut di Am/Pi/On.")
                 table(summary)
-                group = st.selectbox("Lihat kelompok", ["Semua", "Fu", "Ch", "Am", "Pi", "On"])
+                group = st.selectbox("Lihat kelompok", ["Semua", "Fu", "Ch", "Am", "Pi", "On"], key='filter_lihat_kelompok')
                 view = original if group == "Semua" else original[original.rekomendasi == group]
                 st.write(f"**{group}: {len(view)} siswa**" +
                          (" (target Fu 21, Ch 31, Am 30, Pi 29, On 29)" if group == "Semua" else ""))
@@ -394,7 +467,7 @@ if tabs[2].open:
                     editor["Pilihan Bapak"] = editor.rekomendasi
                     edited = st.data_editor(editor, disabled=["student_id", "nama", "Peringkat sekolah (3 TO)", "rekomendasi"],
                                             hide_index=True, width="stretch", height=380,
-                                            column_config={"Pilihan Bapak": st.column_config.SelectboxColumn(
+                                            column_config={"nama": student_name_column(editor, "placement_name_click"), "Pilihan Bapak": st.column_config.SelectboxColumn(
                                                 "Pilihan Bapak", options=["Fu", "Ch", "Am", "Pi", "On"], required=True)},
                                             key="placement_editor")
                     changes = edited[edited["Pilihan Bapak"] != edited.rekomendasi]
