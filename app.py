@@ -50,7 +50,6 @@ PERSISTENT_KEYS = {
     'filter_token_api',
     'filter_top_per_kelas',
     'filter_url_web_app_gas',
-    'placement_editor',
     'quality_provider',
     'report_student',
     'run_scenario',
@@ -61,9 +60,10 @@ PERSISTENT_KEYS = {
     'wk_class',
 }
 
-# Keep filter and editor state while their lazy tab is hidden.
+# Keep only assignable filter state while its lazy tab is hidden.
+# data_editor state is read-only: never assign placement_editor or form_* here.
 for _state_key in list(st.session_state):
-    if _state_key in PERSISTENT_KEYS or _state_key.startswith(("size_", "scenario_lift_", "form_")):
+    if _state_key in PERSISTENT_KEYS or _state_key.startswith(("size_", "scenario_lift_")):
         st.session_state[_state_key] = st.session_state[_state_key]
 
 
